@@ -11,6 +11,8 @@ Pure standard-library Python so it runs on the stock python:alpine image.
   * Talks to Docker (only this app's containers) for status, logs and restarts.
   * Serves the Umbrel home-screen widgets.
   * Backs up and restores every app's settings (see backups.py).
+  * Updates the apps to their newest images on demand or weekly (see updater.py).
+  * Offers one-click fixes for the most common problems.
 """
 import configparser
 import http.client as httpclient
@@ -19,6 +21,8 @@ import json
 import os
 import re
 import socket
+import socketserver
+import sys
 import threading
 import time
 import traceback
@@ -28,6 +32,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import backups
+import updater
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "setup"))
+from seed import friendly_password, qbit_hash  # noqa: E402  (same helpers the first boot uses)
 
 PREFIX = os.environ.get("APP_PREFIX", "yams-media")
 JELLYFIN_PORT = os.environ.get("JELLYFIN_PORT", "8097")
@@ -36,6 +44,10 @@ STATE_DIR = os.environ.get("STATE_DIR", "/yams/state")
 WG_PATH = os.environ.get("WG_PATH", "/yams/vpn/wireguard/wg0.conf")
 YAMS_VERSION = os.environ.get("YAMS_VERSION", "")
 DOCKER_SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
+# The dashboard's controls are only served on this socket, which only the router
+# (Caddy, behind your Umbrel login) can reach. The network port serves widgets only.
+API_SOCK = os.environ.get("API_SOCK", "/sock/dashboard.sock")
+QBIT_CONF = os.environ.get("QBIT_CONF", "/yams/config/qbittorrent/qBittorrent/qBittorrent.conf")
 SECRETS_PATH = f"{STATE_DIR}/secrets.json"
 SETUP_PATH = f"{STATE_DIR}/setup.json"
 
@@ -198,9 +210,10 @@ def _apply_values(fields, values):
     return fields
 
 
-def ensure_download_client(kind):
+def ensure_download_client(kind, force=False):
     """Make sure Sonarr/Radarr has a working qBittorrent entry. Adds it, or repairs one
-    that points somewhere else or was switched off. Returns True when it's in place."""
+    that points somewhere else or was switched off. force=True rewrites the login too
+    (after a password change). Returns True when it's in place."""
     api, h = arr_api(kind)
     values = _client_values(kind)
     status, clients = http("GET", f"{api}/downloadclient", headers=h)
@@ -210,8 +223,8 @@ def ensure_download_client(kind):
     if existing:
         client = existing[0]
         current = {f.get("name"): f.get("value") for f in client.get("fields", [])}
-        wrong = (current.get("host") != QBIT_HOST or str(current.get("port")) != "8080"
-                 or current.get("username") != values["username"] or not client.get("enable"))
+        wrong = force or (current.get("host") != QBIT_HOST or str(current.get("port")) != "8080"
+                          or current.get("username") != values["username"] or not client.get("enable"))
         if not wrong:
             return True
         client["enable"] = True
@@ -300,86 +313,137 @@ def connection_watch():
                     client_status[kind] = {"state": "waiting", "at": time.time()}
             except Exception:
                 traceback.print_exc()
+        try:
+            api, h = prowlarr_api()
+            status, _ = http("GET", f"{api}/system/status", headers=h, timeout=5)
+            if ok(status):
+                ensure_flaresolverr()
+                if not all([ensure_prowlarr_app("sonarr"), ensure_prowlarr_app("radarr")]):
+                    print("[yams] Prowlarr's links need attention; will retry in 10 minutes", flush=True)
+        except Exception:
+            traceback.print_exc()
         time.sleep(600)
 
 
 # --------------------------------------------------------------------------- Prowlarr
+PROWLARR_APPS = {
+    "sonarr": {"name": "Sonarr", "cats": [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5090], "anime": [5070]},
+    "radarr": {"name": "Radarr", "cats": [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080, 2090], "anime": None},
+}
+
+
+def prowlarr_api():
+    return f"{PROWLARR}/api/v1", {"X-Api-Key": secrets().get("prowlarr_key", "")}
+
+
+def _prowlarr_app_values(kind):
+    cfg, app = ARR[kind], PROWLARR_APPS[kind]
+    values = {
+        "prowlarrUrl": PROWLARR,
+        "baseUrl": cfg["base"],
+        "apiKey": secrets().get(cfg["key"], ""),
+        "syncCategories": app["cats"],
+    }
+    if app["anime"]:
+        values["animeSyncCategories"] = app["anime"]
+    return values
+
+
+def ensure_prowlarr_app(kind):
+    """Make sure Prowlarr pushes its indexers to Sonarr/Radarr. Adds the link, or repairs
+    one that points at the wrong address or fails Prowlarr's own connection test."""
+    api, h = prowlarr_api()
+    app = PROWLARR_APPS[kind]
+    values = _prowlarr_app_values(kind)
+    status, apps = http("GET", f"{api}/applications", headers=h)
+    if not ok(status) or not isinstance(apps, list):
+        return False
+    existing = next((a for a in apps if a.get("implementation") == app["name"]), None)
+    if existing:
+        current = {f.get("name"): f.get("value") for f in existing.get("fields", [])}
+        pointed_right = (current.get("baseUrl") or "").rstrip("/") == values["baseUrl"] and \
+            (current.get("prowlarrUrl") or "").rstrip("/") == values["prowlarrUrl"]
+        if pointed_right and existing.get("syncLevel") != "disabled":
+            test_status, _ = http("POST", f"{api}/applications/test", existing, headers=h, timeout=20)
+            if ok(test_status):
+                return True
+        existing["syncLevel"] = "fullSync"
+        _apply_values(existing.setdefault("fields", []), values)
+        status, _ = http("PUT", f"{api}/applications/{existing['id']}?forceSave=true", existing, headers=h)
+        if ok(status):
+            print(f"[yams] Repaired Prowlarr's link to {app['name']}", flush=True)
+        return ok(status)
+
+    status, schema = http("GET", f"{api}/applications/schema", headers=h)
+    template = None
+    if ok(status) and isinstance(schema, list):
+        template = next((x for x in schema if x.get("implementation") == app["name"]), None)
+    if template:
+        body = {k: v for k, v in template.items() if k not in ("id", "presets")}
+        body["fields"] = _apply_values(body.get("fields", []), values)
+    else:
+        body = {"implementation": app["name"], "configContract": f"{app['name']}Settings",
+                "fields": _apply_values([], values)}
+    body.update(name=app["name"], syncLevel="fullSync", tags=[])
+    status, result = http("POST", f"{api}/applications?forceSave=true", body, headers=h)
+    if ok(status):
+        print(f"[yams] Linked Prowlarr to {app['name']}", flush=True)
+        return True
+    print(f"[yams] Prowlarr didn't accept the {app['name']} link ({status}): {str(result)[:300]}", flush=True)
+    return False
+
+
+def ensure_flaresolverr():
+    """FlareSolverr, used by any indexer tagged "flaresolverr"."""
+    api, h = prowlarr_api()
+    status, tags = http("GET", f"{api}/tag", headers=h)
+    if not ok(status):
+        return False
+    tag_id = next((t["id"] for t in tags or [] if t.get("label") == "flaresolverr"), None)
+    if tag_id is None:
+        status, created = http("POST", f"{api}/tag", {"label": "flaresolverr"}, headers=h)
+        if not ok(status):
+            return False
+        tag_id = created["id"]
+    status, proxies = http("GET", f"{api}/indexerProxy", headers=h)
+    if not ok(status):
+        return False
+    if any(p.get("implementation") == "FlareSolverr" for p in proxies or []):
+        return True
+    values = {"host": FLARESOLVERR, "requestTimeout": 60}
+    status, schema = http("GET", f"{api}/indexerProxy/schema", headers=h)
+    template = next((x for x in schema or [] if x.get("implementation") == "FlareSolverr"), None) if ok(status) else None
+    if template:
+        body = {k: v for k, v in template.items() if k not in ("id", "presets")}
+        body["fields"] = _apply_values(body.get("fields", []), values)
+    else:
+        body = {"implementation": "FlareSolverr", "configContract": "FlareSolverrSettings",
+                "fields": _apply_values([], values)}
+    body.update(name="FlareSolverr", tags=[tag_id])
+    status, _ = http("POST", f"{api}/indexerProxy?forceSave=true", body, headers=h)
+    return ok(status)
+
+
+def sync_prowlarr_indexers():
+    api, h = prowlarr_api()
+    status, _ = http("POST", f"{api}/command", {"name": "ApplicationIndexerSync"}, headers=h)
+    return ok(status)
+
+
 def wire_prowlarr():
     if is_done("prowlarr"):
         return True
-    s = secrets()
-    api = f"{PROWLARR}/api/v1"
-    h = {"X-Api-Key": s["prowlarr_key"]}
-    say("Waiting for Prowlarr to start…")
+    api, h = prowlarr_api()
+    say("Waiting for Prowlarr to start\u2026")
     if not wait_for(f"{api}/system/status", h, "Prowlarr"):
         return False
-    say("Connecting Prowlarr to Sonarr, Radarr and FlareSolverr…")
-
-    # FlareSolverr, used by any indexer tagged "flaresolverr"
-    status, tags = http("GET", f"{api}/tag", headers=h)
-    tag_id = None
-    if ok(status):
-        for tag in tags or []:
-            if tag.get("label") == "flaresolverr":
-                tag_id = tag["id"]
-        if tag_id is None:
-            status, created = http("POST", f"{api}/tag", {"label": "flaresolverr"}, headers=h)
-            if ok(status):
-                tag_id = created["id"]
-    status, proxies = http("GET", f"{api}/indexerProxy", headers=h)
-    if ok(status) and tag_id is not None and not any(
-        p.get("implementation") == "FlareSolverr" for p in proxies or []
-    ):
-        http(
-            "POST",
-            f"{api}/indexerProxy?forceSave=true",
-            {
-                "name": "FlareSolverr",
-                "implementation": "FlareSolverr",
-                "configContract": "FlareSolverrSettings",
-                "tags": [tag_id],
-                "fields": [
-                    {"name": "host", "value": FLARESOLVERR},
-                    {"name": "requestTimeout", "value": 60},
-                ],
-            },
-            headers=h,
-        )
-
-    # Sync indexers to Sonarr and Radarr
-    status, apps = http("GET", f"{api}/applications", headers=h)
-    if ok(status):
-        existing = {a.get("implementation") for a in apps or []}
-        targets = [
-            ("Sonarr", SONARR, s["sonarr_key"],
-             [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5090], [5070]),
-            ("Radarr", RADARR, s["radarr_key"],
-             [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080, 2090], None),
-        ]
-        for name, url, key, cats, anime in targets:
-            if name in existing:
-                continue
-            fields = [
-                {"name": "prowlarrUrl", "value": PROWLARR},
-                {"name": "baseUrl", "value": url},
-                {"name": "apiKey", "value": key},
-                {"name": "syncCategories", "value": cats},
-            ]
-            if anime:
-                fields.append({"name": "animeSyncCategories", "value": anime})
-            http(
-                "POST",
-                f"{api}/applications?forceSave=true",
-                {
-                    "name": name,
-                    "implementation": name,
-                    "configContract": f"{name}Settings",
-                    "syncLevel": "fullSync",
-                    "tags": [],
-                    "fields": fields,
-                },
-                headers=h,
-            )
+    say("Connecting Prowlarr to Sonarr, Radarr and FlareSolverr\u2026")
+    ensure_flaresolverr()
+    linked = all([ensure_prowlarr_app("sonarr"), ensure_prowlarr_app("radarr")])
+    if not linked:
+        say("Prowlarr isn't linked to Sonarr and Radarr yet. YAMS will try again shortly.")
+        return False
+    sync_prowlarr_indexers()
     mark("prowlarr", "Prowlarr is connected.")
     return True
 
@@ -418,27 +482,41 @@ def wire_jellyfin():
         http("POST", f"{JELLYFIN}/Startup/Complete")
         time.sleep(3)
 
-    token = jellyfin_token(s)
-    if not token:
+    h = jellyfin_headers()
+    if not h:
         say("Jellyfin was already set up by hand, so YAMS left it alone.")
         mark("jellyfin")
         return True
-    h = {"Authorization": f'{JELLYFIN_AUTH}, Token="{token}"'}
-    status, folders = http("GET", f"{JELLYFIN}/Library/VirtualFolders", headers=h)
-    names = {f.get("Name") for f in folders or []} if ok(status) else set()
-    for name, ctype, path in (("Movies", "movies", "/data/media/movies"),
-                              ("Shows", "tvshows", "/data/media/tv")):
-        if name in names:
-            continue
-        query = urllib.parse.urlencode({"name": name, "collectionType": ctype, "refreshLibrary": "true"})
-        http("POST", f"{JELLYFIN}/Library/VirtualFolders?{query}", {
-            "LibraryOptions": {
-                "EnableRealtimeMonitor": True,
-                "PathInfos": [{"Path": path}],
-            }
-        }, headers=h, timeout=30)
+    ensure_jellyfin_libraries(h)
     mark("jellyfin", "Jellyfin is ready with Movies and Shows libraries.")
     return True
+
+
+def jellyfin_headers():
+    token = jellyfin_token(secrets())
+    return {"Authorization": f'{JELLYFIN_AUTH}, Token="{token}"'} if token else None
+
+
+def ensure_jellyfin_libraries(h):
+    """Movies and Shows libraries, watching the folders Sonarr and Radarr fill. Returns
+    the libraries it had to add."""
+    status, folders = http("GET", f"{JELLYFIN}/Library/VirtualFolders", headers=h)
+    if not ok(status):
+        return None
+    existing = folders or []
+    paths = {p for f in existing for p in (f.get("Locations") or [])}
+    added = []
+    for name, ctype, path in (("Movies", "movies", "/data/media/movies"),
+                              ("Shows", "tvshows", "/data/media/tv")):
+        if path in paths or any(f.get("Name") == name for f in existing):
+            continue
+        query = urllib.parse.urlencode({"name": name, "collectionType": ctype, "refreshLibrary": "true"})
+        status, _ = http("POST", f"{JELLYFIN}/Library/VirtualFolders?{query}", {
+            "LibraryOptions": {"EnableRealtimeMonitor": True, "PathInfos": [{"Path": path}]}
+        }, headers=h, timeout=30)
+        if ok(status):
+            added.append(name)
+    return added
 
 
 def configurator():
@@ -556,10 +634,15 @@ class _DockerConnection(httpclient.HTTPConnection):
         self.sock = sock
 
 
-def docker(method, path, timeout=15):
+def docker(method, path, timeout=15, body=None):
     conn = _DockerConnection(timeout)
+    headers = {"Host": "docker"}
+    payload = None
+    if body is not None:
+        payload = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
     try:
-        conn.request(method, path, headers={"Host": "docker"})
+        conn.request(method, path, body=payload, headers=headers)
         resp = conn.getresponse()
         return resp.status, resp.read()
     except (OSError, httpclient.HTTPException):
@@ -697,7 +780,7 @@ def resume_apps(services):
 def after_restore():
     # Logins may have changed with the restored settings.
     qb_state.update(sid=None, blocked_until=0)
-    updates_cache.update(data=None, at=0)
+    updater.check_cache.update(data=None, at=0)
 
 
 # --------------------------------------------------------------------------- qBittorrent API
@@ -822,71 +905,261 @@ def check_vpn():
 
 
 # --------------------------------------------------------------------------- updates
-# Where each app's newest release is published.
-UPSTREAM = {
-    "jellyfin": ("jellyfin/jellyfin", "releases"),
-    "sonarr": ("Sonarr/Sonarr", "releases"),
-    "radarr": ("Radarr/Radarr", "releases"),
-    "prowlarr": ("Prowlarr/Prowlarr", "releases"),
-    "bazarr": ("morpheus65535/bazarr", "releases"),
-    "qbittorrent": ("qbittorrent/qBittorrent", "tags"),
-    "gluetun": ("qdm12/gluetun", "releases"),
-    "flaresolverr": ("FlareSolverr/FlareSolverr", "releases"),
+def backup_before_update():
+    try:
+        backups._begin("backup")
+    except backups.BackupError:
+        return False
+    return backups.run_backup("pre-update") is not None
+
+
+def something_running():
+    """A backup, restore, update or restart-all is in progress."""
+    if backups.job["active"]:
+        return "Wait for the backup or restore to finish."
+    if updater.job["active"]:
+        return "Wait for the update to finish."
+    if busy.get("_all"):
+        return "Wait for the restart to finish."
+    return None
+
+
+# --------------------------------------------------------------------------- password change
+def _set_qbit_password_in_file(new):
+    """Rewrite qBittorrent's saved password. qBittorrent must be stopped, or it would
+    overwrite the file when it next saves its settings."""
+    with open(QBIT_CONF) as fh:
+        text = fh.read()
+    line = f'WebUI\\Password_PBKDF2="{qbit_hash(new)}"'
+    if re.search(r"^WebUI\\Password_PBKDF2=.*$", text, flags=re.M):
+        text = re.sub(r"^WebUI\\Password_PBKDF2=.*$", lambda _: line, text, flags=re.M)
+    elif "[Preferences]" in text:
+        text = text.replace("[Preferences]", "[Preferences]\n" + line, 1)
+    else:
+        text += "\n[Preferences]\n" + line + "\n"
+    tmp = QBIT_CONF + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    st = os.stat(QBIT_CONF)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, QBIT_CONF)
+
+
+def change_qbit_password(new):
+    containers = project_containers() or {}
+    c = containers.get("qbittorrent")
+    was_running = bool(c and c["state"] in ("running", "restarting"))
+    if was_running:
+        set_busy("qbittorrent", "Changing its password\u2026")
+        docker("POST", f"/containers/{c['id']}/stop?t=30", timeout=90)
+    try:
+        _set_qbit_password_in_file(new)
+    finally:
+        if was_running:
+            docker("POST", f"/containers/{c['id']}/start", timeout=60)
+            set_busy("qbittorrent", None)
+    qb_state.update(sid=None, blocked_until=0)
+
+
+def change_jellyfin_password(old, new):
+    s = secrets()
+    status, auth = http("POST", f"{JELLYFIN}/Users/AuthenticateByName",
+                        {"Username": s.get("username", ""), "Pw": old},
+                        headers={"Authorization": JELLYFIN_AUTH})
+    if not ok(status) or not isinstance(auth, dict):
+        return False
+    user_id = (auth.get("User") or {}).get("Id")
+    h = {"Authorization": f'{JELLYFIN_AUTH}, Token="{auth.get("AccessToken")}"'}
+    status, _ = http("POST", f"{JELLYFIN}/Users/{user_id}/Password",
+                     {"CurrentPw": old, "NewPw": new}, headers=h)
+    return ok(status)
+
+
+def change_password():
+    """New password for Jellyfin and qBittorrent, updated in Sonarr and Radarr too."""
+    s = secrets()
+    old, new = s.get("password", ""), friendly_password()
+    done, problems = [], []
+    if change_jellyfin_password(old, new):
+        done.append("Jellyfin")
+    else:
+        problems.append("Jellyfin (it didn't accept the current password; if you changed it yourself, "
+                        "change it again in Jellyfin's Dashboard \u2192 Users)")
+    try:
+        change_qbit_password(new)
+        done.append("qBittorrent")
+    except OSError as err:
+        problems.append(f"qBittorrent ({err})")
+    if not done:
+        return False, "Nothing was changed. " + "; ".join(problems)
+    s["password"] = new
+    write_json(SECRETS_PATH, s)
+    os.chmod(SECRETS_PATH, 0o600)
+    for kind in ARR:
+        if ensure_download_client(kind, force=True):
+            done.append(ARR[kind]["title"])
+        else:
+            problems.append(f"{ARR[kind]['title']} (use Quick fixes \u2192 Connect qBittorrent once it's running)")
+    message = f"New password set for {', '.join(done)}. Sign in again on your TV and phone apps with the new password."
+    if problems:
+        return False, message + " Still to sort out: " + "; ".join(problems) + "."
+    return True, message
+
+
+password_job = {"running": False, "ok": None, "message": None, "at": 0}
+
+
+def run_change_password():
+    password_job.update(running=True, ok=None, message="Changing the password\u2026", at=time.time())
+    try:
+        good, message = change_password()
+    except Exception as err:
+        traceback.print_exc()
+        good, message = False, f"Changing the password hit an error: {err}"
+    password_job.update(running=False, ok=good, message=message, at=time.time())
+    print(f"[yams] Change password: {message}", flush=True)
+
+
+# --------------------------------------------------------------------------- quick fixes
+# Each fix is safe to run at any time and returns (ok, plain-English result).
+def _arr_up(kind):
+    api, h = arr_api(kind)
+    status, _ = http("GET", f"{api}/system/status", headers=h, timeout=5)
+    return ok(status)
+
+
+def fix_prowlarr():
+    api, h = prowlarr_api()
+    status, _ = http("GET", f"{api}/system/status", headers=h, timeout=5)
+    if not ok(status):
+        return False, "Prowlarr isn't running. Restart it, then try again."
+    down = [ARR[k]["title"] for k in ARR if not _arr_up(k)]
+    if down:
+        return False, f"{' and '.join(down)} isn't running yet. Restart it, then try again."
+    ensure_flaresolverr()
+    results = {k: ensure_prowlarr_app(k) for k in ARR}
+    failed = [ARR[k]["title"] for k, good in results.items() if not good]
+    if failed:
+        return False, f"Prowlarr couldn't be linked to {' and '.join(failed)}. The YAMS dashboard logs say why."
+    sync_prowlarr_indexers()
+    status, indexers = http("GET", f"{api}/indexer", headers=h)
+    n = len(indexers) if ok(status) and isinstance(indexers, list) else 0
+    note = f" Syncing {n} indexer{'s' if n != 1 else ''} now." if n else " Add indexers in Prowlarr and they'll appear in both."
+    return True, "Prowlarr is linked to Sonarr and Radarr." + note
+
+
+def fix_qbittorrent():
+    down = [ARR[k]["title"] for k in ARR if not _arr_up(k)]
+    if down:
+        return False, f"{' and '.join(down)} isn't running yet. Restart it, then try again."
+    failed = [ARR[k]["title"] for k in ARR if not ensure_download_client(k)]
+    if failed:
+        return False, f"qBittorrent couldn't be added to {' and '.join(failed)}. The YAMS dashboard logs say why."
+    qb_up = (status_cache["data"] or {}).get("answering", {}).get("qbittorrent")
+    if not qb_up:
+        for k in ARR:
+            client_status[k] = {"state": "waiting", "at": time.time()}
+        return True, "qBittorrent is set up in Sonarr and Radarr. It will connect once qBittorrent is running behind the VPN."
+    states = {k: test_download_client(k) for k in ARR}
+    bad = [ARR[k]["title"] for k, st in states.items() if st != "connected"]
+    if bad:
+        return False, f"{' and '.join(bad)} can't reach qBittorrent. Check qBittorrent's logs, or use Reconnect the VPN."
+    return True, "Sonarr and Radarr are connected to qBittorrent and passed the connection test."
+
+
+def fix_folders():
+    notes, problems = [], []
+    containers = project_containers() or {}
+    init = containers.get("init")
+    if init:
+        docker("POST", f"/containers/{init['id']}/start", timeout=30)
+        for _ in range(30):
+            info = inspect(init["id"]) or {}
+            if not (info.get("State") or {}).get("Running"):
+                break
+            time.sleep(1)
+        notes.append("recreated the media folders")
+    for k in ARR:
+        if not _arr_up(k):
+            problems.append(f"{ARR[k]['title']} isn't running")
+        elif ensure_root_folder(k):
+            notes.append(f"{ARR[k]['title']} saves to {ARR[k]['root']}")
+        else:
+            problems.append(f"{ARR[k]['title']} wouldn't accept its library folder")
+    h = jellyfin_headers()
+    if not h:
+        problems.append("YAMS can't log in to Jellyfin (was its password changed?)")
+    else:
+        added = ensure_jellyfin_libraries(h)
+        if added is None:
+            problems.append("Jellyfin didn't answer")
+        else:
+            notes.append(f"added Jellyfin's {' and '.join(added)} librar{'ies' if len(added) > 1 else 'y'}" if added
+                         else "Jellyfin's libraries are in place")
+    message = "Done: " + "; ".join(notes) + "." if notes else ""
+    if problems:
+        return False, (message + " " if message else "") + "Still to sort out: " + "; ".join(problems) + "."
+    return True, message
+
+
+def fix_rescan():
+    h = jellyfin_headers()
+    if not h:
+        return False, "YAMS can't log in to Jellyfin (was its password changed?). Rescan from Jellyfin's Dashboard instead."
+    status, _ = http("POST", f"{JELLYFIN}/Library/Refresh", headers=h, timeout=20)
+    if not ok(status):
+        return False, "Jellyfin didn't start the scan. Is it running?"
+    return True, "Jellyfin is rescanning your libraries. New items appear within a few minutes."
+
+
+def fix_search():
+    started = []
+    for kind, command, label in (("sonarr", "MissingEpisodeSearch", "missing episodes"),
+                                 ("radarr", "MissingMoviesSearch", "missing movies")):
+        api, h = arr_api(kind)
+        status, _ = http("POST", f"{api}/command", {"name": command}, headers=h)
+        if ok(status):
+            started.append(label)
+    if not started:
+        return False, "Neither Sonarr nor Radarr answered. Are they running?"
+    return True, f"Searching for {' and '.join(started)} now. Check Sonarr's and Radarr's Activity tabs."
+
+
+def fix_vpn():
+    if not (os.path.exists(WG_PATH) and os.path.getsize(WG_PATH) > 0):
+        return False, "No VPN is set up yet. Paste your WireGuard file in step 1 first."
+    restart_service("gluetun")
+    return True, "Reconnecting the VPN. qBittorrent restarts once the tunnel is back, usually within a minute."
+
+
+def fix_all():
+    results = [fix_prowlarr(), fix_qbittorrent(), fix_folders()]
+    good = all(r[0] for r in results)
+    return good, " ".join(r[1] for r in results)
+
+
+FIXES = {
+    "prowlarr": ("Connect Prowlarr to Sonarr and Radarr", fix_prowlarr),
+    "qbittorrent": ("Connect qBittorrent to Sonarr and Radarr", fix_qbittorrent),
+    "folders": ("Fix library folders", fix_folders),
+    "rescan": ("Rescan Jellyfin", fix_rescan),
+    "search": ("Search for missing episodes and movies", fix_search),
+    "vpn": ("Reconnect the VPN", fix_vpn),
+    "all": ("Fix everything", fix_all),
 }
-updates_cache = {"data": None, "at": 0}
-updates_lock = threading.Lock()
+fix_state = {}  # id -> {"running", "ok", "message", "at"}
 
 
-def version_tuple(text):
-    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
-    return tuple(int(x or 0) for x in match.groups()) if match else None
-
-
-def github_json(path):
-    req = urllib.request.Request(f"https://api.github.com{path}",
-                                 headers={"User-Agent": "yams-umbrel", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
-
-
-def latest_version(repo, kind):
-    if kind == "releases":
-        return github_json(f"/repos/{repo}/releases/latest").get("tag_name")
-    best = None
-    for tag in github_json(f"/repos/{repo}/tags?per_page=40"):
-        name = tag.get("name", "")
-        if not re.fullmatch(r"release-\d+\.\d+\.\d+", name):
-            continue
-        if best is None or version_tuple(name) > version_tuple(best):
-            best = name
-    return best
-
-
-def check_updates(force=False):
-    with updates_lock:
-        if not force and updates_cache["data"] and time.time() - updates_cache["at"] < 6 * 3600:
-            return updates_cache["data"]
-        containers = project_containers() or {}
-        rows = []
-        for service, name, _, _ in SERVICES:
-            row = {"service": service, "name": name, "installed": None, "latest": None, "status": "unknown"}
-            c = containers.get(service)
-            if c:
-                image = ((inspect(c["id"]) or {}).get("Config") or {}).get("Image", "")
-                tag = image.split("@")[0].rsplit(":", 1)[-1] if ":" in image.split("@")[0] else ""
-                row["installed"] = ".".join(map(str, version_tuple(tag))) if version_tuple(tag) else tag or None
-            try:
-                latest = latest_version(*UPSTREAM[service])
-                row["latest"] = ".".join(map(str, version_tuple(latest))) if version_tuple(latest) else latest
-            except Exception:
-                row["status"] = "unreachable"
-            inst, late = version_tuple(row["installed"]), version_tuple(row["latest"])
-            if inst and late:
-                row["status"] = "update" if late > inst else "current"
-            rows.append(row)
-        data = {"checked_at": int(time.time()), "yams_version": YAMS_VERSION, "apps": rows}
-        updates_cache.update(data=data, at=time.time())
-        return data
+def run_fix(fix_id):
+    fix_state[fix_id] = {"running": True, "ok": None, "message": "Working\u2026", "at": time.time()}
+    try:
+        good, message = FIXES[fix_id][1]()
+    except Exception as err:
+        traceback.print_exc()
+        good, message = False, f"That fix hit an error: {err}"
+    fix_state[fix_id] = {"running": False, "ok": good, "message": message, "at": time.time()}
+    print(f"[yams] Fix '{FIXES[fix_id][0]}': {message}", flush=True)
 
 
 # --------------------------------------------------------------------------- status
@@ -987,10 +1260,14 @@ def gather_status():
         "indexers": indexers,
         "series": series,
         "movies": movies,
-        "busy_all": busy.get("_all") or (backups.job["step"] if backups.job["active"] else None),
+        "busy_all": busy.get("_all") or (backups.job["step"] if backups.job["active"] else None)
+        or (updater.job["step"] if updater.job["active"] else None),
         "backup": backups.status(),
+        "updates": updater.status(),
+        "fixes": [{"id": k, "label": v[0], **fix_state.get(k, {})} for k, v in FIXES.items()],
         "setup": {"message": setup.get("message"), "done": setup.get("done", {})},
         "login": {"username": s.get("username"), "password": s.get("password")},
+        "password_job": password_job if time.time() - password_job["at"] < 900 or password_job["running"] else None,
         "jellyfin_port": JELLYFIN_PORT,
         "log_services": [{"service": x, "name": LOG_LABELS[x]} for x in LOG_SERVICES],
         "updated": int(time.time()),
@@ -1048,6 +1325,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -1077,7 +1356,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"service": service, "logs": text})
         if path == "/api/updates":
             force = (query.get("refresh") or ["0"])[0] == "1"
-            return self.send(200, check_updates(force))
+            return self.send(200, updater.check(force))
         if path == "/api/backups/download":
             try:
                 file_path = backups.safe_name((query.get("name") or [""])[0])
@@ -1108,6 +1387,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        # Browsers won't let another website add a custom header without CORS approval,
+        # which this server never gives, so this blocks cross-site requests.
+        if self.headers.get("X-Yams-Request") != "1" or self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+            return self.send(403, {"error": "That request didn't come from the YAMS dashboard."})
         if path == "/api/backups/upload":
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -1122,8 +1405,44 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.send(400, {"error": "Couldn't read that request."})
 
-        if path in ("/api/restart", "/api/restart-all") and backups.job["active"]:
-            return self.send(409, {"error": "Wait for the backup or restore to finish."})
+        if path in ("/api/restart", "/api/restart-all", "/api/backups/create", "/api/backups/restore",
+                    "/api/updates/apply"):
+            reason = something_running()
+            if reason:
+                return self.send(409, {"error": reason})
+        if path == "/api/password":
+            if password_job["running"]:
+                return self.send(409, {"error": "Already changing the password."})
+            reason = something_running()
+            if reason:
+                return self.send(409, {"error": reason})
+            threading.Thread(target=run_change_password, daemon=True).start()
+            return self.send(202, {"ok": True})
+        if path == "/api/fix":
+            fix_id = body.get("fix")
+            if fix_id not in FIXES:
+                return self.send(400, {"error": "Unknown fix."})
+            if any(f.get("running") for f in fix_state.values()):
+                return self.send(409, {"error": "Another fix is still running."})
+            reason = something_running()
+            if reason:
+                return self.send(409, {"error": reason})
+            threading.Thread(target=run_fix, args=(fix_id,), daemon=True).start()
+            return self.send(202, {"ok": True})
+        if path == "/api/updates/apply":
+            services = body.get("services")
+            if services is not None and (not isinstance(services, list) or not set(services) <= set(updater.APPS)):
+                return self.send(400, {"error": "Unknown app."})
+            try:
+                updater.start_update(services)
+            except updater.UpdateError as err:
+                return self.send(409, {"error": str(err)})
+            return self.send(202, {"ok": True})
+        if path == "/api/updates/settings":
+            try:
+                return self.send(200, updater.update_settings(body.get("auto")))
+            except updater.UpdateError as err:
+                return self.send(400, {"error": str(err)})
         if path == "/api/restart":
             service = body.get("service")
             if service not in RESTARTABLE:
@@ -1144,8 +1463,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"error": str(err)})
             return self.send(202, {"ok": True})
         if path == "/api/backups/restore":
-            if busy.get("_all"):
-                return self.send(409, {"error": "Wait for the restart to finish."})
             try:
                 backups.start_restore(body.get("name"))
             except backups.BackupError as err:
@@ -1179,6 +1496,38 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "Not found"})
 
 
+class WidgetHandler(Handler):
+    """What the shared Umbrel network can reach: the two read-only widgets, nothing else."""
+
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/widgets/stats":
+            return self.send(200, widget_stats())
+        if path == "/widgets/downloads":
+            return self.send(200, widget_downloads())
+        return self.send(404, {"error": "Not found"})
+
+    def do_POST(self):
+        return self.send(404, {"error": "Not found"})
+
+
+class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+    def get_request(self):
+        request, _ = super().get_request()
+        return request, ("local", 0)
+
+
+def serve_api(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        os.remove(path)
+    server = UnixHTTPServer(path, Handler)
+    os.chmod(path, 0o660)
+    return server
+
+
 def main():
     backups.hooks.update(stop=pause_apps, start=resume_apps, after_restore=after_restore, version=YAMS_VERSION)
     backups.ensure_backup_dir()
@@ -1187,13 +1536,18 @@ def main():
     except Exception:
         traceback.print_exc()
     threading.Thread(target=backups.scheduler, daemon=True).start()
+    updater.hooks.update(docker=docker, containers=project_containers, inspect=inspect,
+                         backup=backup_before_update, set_busy=set_busy)
+    threading.Thread(target=updater.scheduler, daemon=True).start()
     if not os.path.exists(SETUP_PATH):
         write_json(SETUP_PATH, {"done": {}, "message": "Getting everything ready\u2026"})
     threading.Thread(target=configurator, daemon=True).start()
     threading.Thread(target=status_loop, daemon=True).start()
     threading.Thread(target=connection_watch, daemon=True).start()
-    print("[yams] dashboard listening on :8000", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+    api = serve_api(API_SOCK)
+    threading.Thread(target=api.serve_forever, daemon=True).start()
+    print(f"[yams] dashboard controls on {API_SOCK}; widgets on :8000", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", 8000), WidgetHandler).serve_forever()
 
 
 if __name__ == "__main__":

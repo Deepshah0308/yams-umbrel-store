@@ -7,6 +7,12 @@
 :8080 {
 	encode gzip
 
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
 	@sonarr path /sonarr /sonarr/*
 	handle @sonarr {
 		reverse_proxy yams-media_sonarr_1:8989
@@ -36,8 +42,9 @@
 		}
 	}
 
+	# The dashboard's controls are only reachable through this socket, never the network.
 	handle {
-		reverse_proxy yams-media_dashboard_1:8000
+		reverse_proxy unix//sock/dashboard.sock
 	}
 
 	handle_errors {

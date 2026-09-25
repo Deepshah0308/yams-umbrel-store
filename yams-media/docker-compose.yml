@@ -7,11 +7,23 @@ version: "3.7"
 # App code lives in hooks/yams/ on purpose: umbrelOS re-copies the hooks folder on
 # every app update, but not other folders. Nothing in it is named like a hook
 # (pre-start, post-update, ...) so umbrelOS never executes it.
+#
+# Security: the media apps live on a private network ("yams") that other Umbrel apps
+# can't reach. Only the router (web) and the dashboard also join Umbrel's shared
+# network: the router so the Umbrel login can reach it, and the dashboard only to
+# serve the two read-only home-screen widgets. The dashboard's controls are served on
+# a Unix socket that only the router mounts.
+#
+# The media apps use moving tags (latest, or v3 for gluetun) so the YAMS dashboard's
+# "Update apps" button can bring them up to date without waiting for a YAMS release.
 
 x-common-env: &common-env
   PUID: "1000"
   PGID: "1000"
   TZ: ${TZ:-Etc/UTC}
+
+networks:
+  yams: {}
 
 services:
   app_proxy:
@@ -33,6 +45,7 @@ services:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data:/yams
       - ${UMBREL_ROOT}/data/storage/downloads:/data
+    networks: [yams]
 
   # Front door: routes /sonarr, /radarr, /prowlarr, /bazarr, /qbittorrent and the dashboard.
   web:
@@ -41,6 +54,8 @@ services:
     restart: on-failure
     volumes:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
+      - ${APP_DATA_DIR}/data/sock:/sock
+    networks: [default, yams]
 
   # Setup dashboard, auto-configurator, log viewer, app controls and backups
   # (plain Python, no custom image needed). It uses the Docker socket only to
@@ -52,14 +67,17 @@ services:
     environment:
       APP_PREFIX: yams-media
       JELLYFIN_PORT: "8097"
-      YAMS_VERSION: "1.2.2"
+      YAMS_VERSION: "1.3.0"
       DATA_DIR: /yams
       BACKUP_DIR: /backups
+      API_SOCK: /sock/dashboard.sock
     volumes:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data:/yams
+      - ${APP_DATA_DIR}/data/sock:/sock
       - ${UMBREL_ROOT}/data/storage/downloads/yams-backups:/backups
       - /var/run/docker.sock:/var/run/docker.sock
+    networks: [default, yams]
     depends_on:
       init:
         condition: service_completed_successfully
@@ -68,7 +86,7 @@ services:
   # Watching
   # ---------------------------------------------------------------------------
   jellyfin:
-    image: linuxserver/jellyfin:10.11.11@sha256:c123ef2f82195e377d8ca3df275f13f9dfa5c6e61b195958662b42b5e54362ab
+    image: linuxserver/jellyfin:latest
     restart: on-failure
     environment:
       <<: *common-env
@@ -79,12 +97,13 @@ services:
       # Jellyfin keeps its own logins so TV and phone apps can connect directly:
       # http://umbrel.local:8097
       - 8097:8096
+    networks: [yams]
 
   # ---------------------------------------------------------------------------
   # Finding and organising
   # ---------------------------------------------------------------------------
   sonarr:
-    image: linuxserver/sonarr:4.0.20@sha256:a5c1a5fecbef946927ab90ad68df319ac5fe644057e5fc18cd993f01ac07b2b2
+    image: linuxserver/sonarr:latest
     restart: on-failure
     environment:
       <<: *common-env
@@ -94,9 +113,10 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    networks: [yams]
 
   radarr:
-    image: linuxserver/radarr:6.4.4@sha256:c960f2b52ec6542dbe6707c5a21e696a7c74fd8b17997454f4d10a55dacee133
+    image: linuxserver/radarr:latest
     restart: on-failure
     environment:
       <<: *common-env
@@ -106,9 +126,10 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    networks: [yams]
 
   prowlarr:
-    image: linuxserver/prowlarr:version-2.6.5.5623@sha256:c96b56d94d116a9f4de94bc23d3381689492e6c3cfb7435320e8d982e406f99a
+    image: linuxserver/prowlarr:latest
     restart: on-failure
     environment:
       <<: *common-env
@@ -117,15 +138,17 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    networks: [yams]
 
   flaresolverr:
-    image: flaresolverr/flaresolverr:v3.4.6@sha256:7962759d99d7e125e108e0f5e7f3cdbcd36161776d058d1d9b7153b92ef1af9e
+    image: flaresolverr/flaresolverr:latest
     restart: on-failure
     environment:
       TZ: ${TZ:-Etc/UTC}
+    networks: [yams]
 
   bazarr:
-    image: linuxserver/bazarr:1.6.1@sha256:d24bd0048c759a468970989e9df11a6b96a7628d556d00f923e60a35ba59237b
+    image: linuxserver/bazarr:latest
     restart: on-failure
     environment:
       <<: *common-env
@@ -135,13 +158,14 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+    networks: [yams]
 
   # ---------------------------------------------------------------------------
   # Downloading — qBittorrent lives *inside* the VPN container's network.
   # It only starts once the VPN tunnel is up and shuts itself down if it drops.
   # ---------------------------------------------------------------------------
   gluetun:
-    image: qmcgaw/gluetun:v3.41.3
+    image: qmcgaw/gluetun:v3
     entrypoint: ["/bin/sh", "/app/vpn/vpn-wrapper.sh"]
     restart: unless-stopped
     cap_add:
@@ -152,16 +176,17 @@ services:
       TZ: ${TZ:-Etc/UTC}
       VPN_SERVICE_PROVIDER: custom
       VPN_TYPE: wireguard
-      # Let the dashboard (8000) and Sonarr/Radarr (8080) reach in from the Umbrel network
+      # Let the dashboard (8000) and Sonarr/Radarr (8080) reach in over the private network
       FIREWALL_INPUT_PORTS: "8080,8000"
       HTTP_CONTROL_SERVER_ADDRESS: ":8000"
       UPDATER_PERIOD: "0"
     volumes:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data/vpn:/gluetun
+    networks: [yams]
 
   qbittorrent:
-    image: linuxserver/qbittorrent:5.2.3@sha256:457e4eec2ee3f5e4ef59f237ad51f6143deba9f7445ab48bb5204a98888ef9aa
+    image: linuxserver/qbittorrent:latest
     # YAMS scripts go in /yams-app, not /app: this image keeps qbittorrent-nox in /app.
     entrypoint: ["/bin/sh", "/yams-app/qbittorrent/entry.sh"]
     network_mode: "service:gluetun"

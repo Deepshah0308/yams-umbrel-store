@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.2.2"
+version: "1.3.0"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
 icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
@@ -39,8 +39,8 @@ description: >-
   🧰 ONE PLACE TO MANAGE IT ALL
 
   The YAMS dashboard shows every app's status, lets you read logs and restart any app, runs a
-  VPN leak check, checks for newer versions, and backs up and restores all your settings
-  (on demand or automatically every day or week). Home-screen widgets show VPN status, active
+  VPN leak check, updates every app to its newest version with one click (or weekly), backs up
+  and restores all your settings, and has one-click fixes for the most common problems. Home-screen widgets show VPN status, active
   downloads and your library at a glance.
 
 
@@ -59,9 +59,11 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  Sonarr and Radarr now reliably get qBittorrent set up as their download client, and YAMS
-  re-checks the connection every 10 minutes, repairing it if needed (this also fixes existing
-  installs). Includes the qBittorrent start fix and backups from 1.2.x.
+  Security: YAMS's apps now live on a private network other Umbrel apps can't reach, the
+  dashboard's controls are only reachable behind your Umbrel login, and a new Change password
+  button updates Jellyfin, qBittorrent, Sonarr and Radarr together. Please use it once after
+  updating. Also new: update every app yourself with one click or weekly, Quick fixes for
+  common problems, and Prowlarr is now linked to Radarr as well as Sonarr.
 widgets:
   - id: "stats"
     type: "four-stats"
