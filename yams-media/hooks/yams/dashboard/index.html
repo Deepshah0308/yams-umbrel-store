@@ -551,8 +551,8 @@ function renderApps(s) {
     li.querySelector(".app-state").className = `app-state ${app.tone}`;
     li.querySelector("[data-label]").textContent = app.label;
     const detail = li.querySelector("[data-detail]");
-    detail.hidden = !app.detail;
-    detail.textContent = app.detail ? `Last log line: ${app.detail.replace(/^\S+Z\s/, "")}` : "";
+    detail.hidden = !app.detail && !app.note;
+    detail.textContent = app.detail ? `Last log line: ${app.detail.replace(/^\S+Z\s/, "")}` : (app.note || "");
     const open = li.querySelector("[data-open]");
     if (open) open.href = app.link === "jellyfin" ? jellyUrl(s.jellyfin_port) : app.link;
     const rb = li.querySelector("[data-restart]");

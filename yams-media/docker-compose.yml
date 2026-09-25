@@ -52,7 +52,7 @@ services:
     environment:
       APP_PREFIX: yams-media
       JELLYFIN_PORT: "8097"
-      YAMS_VERSION: "1.2.1"
+      YAMS_VERSION: "1.2.2"
       DATA_DIR: /yams
       BACKUP_DIR: /backups
     volumes:

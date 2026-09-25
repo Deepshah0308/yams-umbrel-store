@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.2.1"
+version: "1.2.2"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
 icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
@@ -59,9 +59,9 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  Fixes qBittorrent failing to start ("unable to exec /app/qbittorrent-nox"). Also includes
-  backups like `yams backup`: back up with one click or automatically, and restore from the
-  YAMS dashboard.
+  Sonarr and Radarr now reliably get qBittorrent set up as their download client, and YAMS
+  re-checks the connection every 10 minutes, repairing it if needed (this also fixes existing
+  installs). Includes the qBittorrent start fix and backups from 1.2.x.
 widgets:
   - id: "stats"
     type: "four-stats"
