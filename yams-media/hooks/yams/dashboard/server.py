@@ -145,63 +145,162 @@ def wait_for(url, headers=None, label="app", timeout=600):
 
 
 # --------------------------------------------------------------------------- Sonarr / Radarr
-def wire_arr(kind):
+ARR = {
+    "sonarr": {"title": "Sonarr", "base": SONARR, "key": "sonarr_key", "root": "/data/media/tv",
+               "category_field": "tvCategory", "category": "tv", "rename_field": "renameEpisodes"},
+    "radarr": {"title": "Radarr", "base": RADARR, "key": "radarr_key", "root": "/data/media/movies",
+               "category_field": "movieCategory", "category": "movies", "rename_field": "renameMovies"},
+}
+CLIENT_NAME = "qBittorrent (VPN)"
+# kind -> {"state": "connected" | "unreachable" | "missing" | "unknown", "at": time}
+client_status = {"sonarr": {"state": "unknown", "at": 0}, "radarr": {"state": "unknown", "at": 0}}
+
+
+def arr_api(kind):
+    cfg = ARR[kind]
+    return f"{cfg['base']}/api/v3", {"X-Api-Key": secrets().get(cfg["key"], "")}
+
+
+def ensure_root_folder(kind):
+    api, h = arr_api(kind)
+    root = ARR[kind]["root"]
+    status, folders = http("GET", f"{api}/rootfolder", headers=h)
+    if not ok(status):
+        return False
+    if any(f.get("path", "").rstrip("/") == root for f in folders or []):
+        return True
+    status, _ = http("POST", f"{api}/rootfolder", {"path": root}, headers=h)
+    return ok(status)
+
+
+def _client_values(kind):
     s = secrets()
-    if kind == "sonarr":
-        base, key, title = SONARR, s["sonarr_key"], "Sonarr"
-        root, category_field, category = "/data/media/tv", "tvCategory", "tv"
-        rename_field = "renameEpisodes"
+    cfg = ARR[kind]
+    return {
+        "host": QBIT_HOST,
+        "port": 8080,
+        "useSsl": False,
+        "urlBase": "",
+        "username": s.get("username", ""),
+        "password": s.get("password", ""),
+        cfg["category_field"]: cfg["category"],
+    }
+
+
+def _apply_values(fields, values):
+    for field in fields:
+        if field.get("name") in values:
+            field["value"] = values[field["name"]]
+    have = {f.get("name") for f in fields}
+    for name, value in values.items():
+        if name not in have:
+            fields.append({"name": name, "value": value})
+    return fields
+
+
+def ensure_download_client(kind):
+    """Make sure Sonarr/Radarr has a working qBittorrent entry. Adds it, or repairs one
+    that points somewhere else or was switched off. Returns True when it's in place."""
+    api, h = arr_api(kind)
+    values = _client_values(kind)
+    status, clients = http("GET", f"{api}/downloadclient", headers=h)
+    if not ok(status) or not isinstance(clients, list):
+        return False
+    existing = [c for c in clients if c.get("implementation") == "QBittorrent"]
+    if existing:
+        client = existing[0]
+        current = {f.get("name"): f.get("value") for f in client.get("fields", [])}
+        wrong = (current.get("host") != QBIT_HOST or str(current.get("port")) != "8080"
+                 or current.get("username") != values["username"] or not client.get("enable"))
+        if not wrong:
+            return True
+        client["enable"] = True
+        _apply_values(client.setdefault("fields", []), values)
+        status, _ = http("PUT", f"{api}/downloadclient/{client['id']}?forceSave=true", client, headers=h)
+        if ok(status):
+            print(f"[yams] Repaired the qBittorrent connection in {ARR[kind]['title']}", flush=True)
+        return ok(status)
+
+    # Start from the app's own blank qBittorrent form so every field it expects is present.
+    status, schema = http("GET", f"{api}/downloadclient/schema", headers=h)
+    template = None
+    if ok(status) and isinstance(schema, list):
+        template = next((x for x in schema if x.get("implementation") == "QBittorrent"), None)
+    if template:
+        body = {k: v for k, v in template.items() if k not in ("id", "presets")}
+        body["fields"] = _apply_values(body.get("fields", []), values)
     else:
-        base, key, title = RADARR, s["radarr_key"], "Radarr"
-        root, category_field, category = "/data/media/movies", "movieCategory", "movies"
-        rename_field = "renameMovies"
-    api = f"{base}/api/v3"
-    h = {"X-Api-Key": key}
+        body = {"implementation": "QBittorrent", "configContract": "QBittorrentSettings",
+                "protocol": "torrent", "fields": _apply_values([], values)}
+    body.update(name=CLIENT_NAME, enable=True, priority=1, tags=[],
+                removeCompletedDownloads=True, removeFailedDownloads=True)
+    # forceSave: qBittorrent may still be waiting for the VPN; the entry is saved anyway.
+    status, result = http("POST", f"{api}/downloadclient?forceSave=true", body, headers=h)
+    if ok(status):
+        print(f"[yams] Added qBittorrent to {ARR[kind]['title']}", flush=True)
+        return True
+    print(f"[yams] {ARR[kind]['title']} didn't accept the qBittorrent entry ({status}): {str(result)[:300]}", flush=True)
+    return False
+
+
+def test_download_client(kind):
+    """Ask Sonarr/Radarr to test its qBittorrent entry, the same as its Test button."""
+    api, h = arr_api(kind)
+    status, clients = http("GET", f"{api}/downloadclient", headers=h)
+    client = next((c for c in clients or [] if c.get("implementation") == "QBittorrent"), None) if ok(status) else None
+    if not client:
+        state = "missing"
+    else:
+        status, _ = http("POST", f"{api}/downloadclient/test", client, headers=h, timeout=20)
+        state = "connected" if ok(status) else "unreachable"
+    client_status[kind] = {"state": state, "at": time.time()}
+    return state
+
+
+def wire_arr(kind):
+    cfg = ARR[kind]
+    api, h = arr_api(kind)
     if is_done(kind):
         return True
-    say(f"Waiting for {title} to start…")
-    if not wait_for(f"{api}/system/status", h, title):
+    say(f"Waiting for {cfg['title']} to start\u2026")
+    if not wait_for(f"{api}/system/status", h, cfg["title"]):
         return False
-    say(f"Connecting {title} to your library and qBittorrent…")
-
-    # Library folder
-    status, folders = http("GET", f"{api}/rootfolder", headers=h)
-    if ok(status) and not any(f.get("path", "").rstrip("/") == root for f in folders or []):
-        http("POST", f"{api}/rootfolder", {"path": root}, headers=h)
-
-    # Download client
-    status, clients = http("GET", f"{api}/downloadclient", headers=h)
-    if ok(status) and not any(c.get("implementation") == "QBittorrent" for c in clients or []):
-        body = {
-            "enable": True,
-            "protocol": "torrent",
-            "priority": 1,
-            "removeCompletedDownloads": True,
-            "removeFailedDownloads": True,
-            "name": "qBittorrent (VPN)",
-            "implementation": "QBittorrent",
-            "configContract": "QBittorrentSettings",
-            "tags": [],
-            "fields": [
-                {"name": "host", "value": QBIT_HOST},
-                {"name": "port", "value": 8080},
-                {"name": "useSsl", "value": False},
-                {"name": "username", "value": s["username"]},
-                {"name": "password", "value": s["password"]},
-                {"name": category_field, "value": category},
-            ],
-        }
-        # forceSave: qBittorrent may still be waiting on the VPN, which is fine.
-        http("POST", f"{api}/downloadclient?forceSave=true", body, headers=h)
+    say(f"Connecting {cfg['title']} to your library and qBittorrent\u2026")
+    if not ensure_root_folder(kind) or not ensure_download_client(kind):
+        say(f"{cfg['title']} isn't fully connected yet. YAMS will try again shortly.")
+        return False
 
     # Tidy file names (the default is off)
     status, naming = http("GET", f"{api}/config/naming", headers=h)
-    if ok(status) and isinstance(naming, dict) and not naming.get(rename_field):
-        naming[rename_field] = True
+    if ok(status) and isinstance(naming, dict) and not naming.get(cfg["rename_field"]):
+        naming[cfg["rename_field"]] = True
         http("PUT", f"{api}/config/naming/{naming.get('id', 1)}", naming, headers=h)
 
-    mark(kind, f"{title} is connected.")
+    mark(kind, f"{cfg['title']} is connected.")
     return True
+
+
+def connection_watch():
+    """Every 10 minutes: re-check that Sonarr and Radarr still reach qBittorrent, and
+    repair their settings if needed (this also fixes installs made by older versions)."""
+    time.sleep(30)
+    while True:
+        for kind in ARR:
+            try:
+                api, h = arr_api(kind)
+                status, _ = http("GET", f"{api}/system/status", headers=h, timeout=5)
+                if not ok(status):
+                    continue
+                ensure_root_folder(kind)
+                ensure_download_client(kind)
+                vpn_up = (status_cache["data"] or {}).get("answering", {}).get("qbittorrent")
+                if vpn_up:
+                    test_download_client(kind)
+                else:
+                    client_status[kind] = {"state": "waiting", "at": time.time()}
+            except Exception:
+                traceback.print_exc()
+        time.sleep(600)
 
 
 # --------------------------------------------------------------------------- Prowlarr
@@ -863,8 +962,14 @@ def gather_status():
         detail = None
         if tone in ("wait", "down") and c and not busy.get(service):
             detail = last_log_line(c["id"])
+        note = None
+        if service in ARR and tone == "up":
+            note = {
+                "missing": "qBittorrent isn't set up here yet. YAMS is adding it now.",
+                "unreachable": "Can't reach qBittorrent right now. YAMS checks again every 10 minutes.",
+            }.get(client_status[service]["state"])
         apps.append({"service": service, "name": name, "what": what, "link": link,
-                     "tone": tone, "label": label, "detail": detail,
+                     "tone": tone, "label": label, "detail": detail, "note": note,
                      "can_restart": service in RESTARTABLE and bool(c)})
 
     indexers = count(f"{PROWLARR}/api/v1/indexer", ph) if answering["prowlarr"] else None
@@ -1086,6 +1191,7 @@ def main():
         write_json(SETUP_PATH, {"done": {}, "message": "Getting everything ready\u2026"})
     threading.Thread(target=configurator, daemon=True).start()
     threading.Thread(target=status_loop, daemon=True).start()
+    threading.Thread(target=connection_watch, daemon=True).start()
     print("[yams] dashboard listening on :8000", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
 
