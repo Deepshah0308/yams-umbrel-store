@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.0.1"
+version: "1.1.0"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
 icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
@@ -36,6 +36,13 @@ description: >-
   indexers in Prowlarr, add a show or movie, then start watching in Jellyfin (port 8097).
 
 
+  🧰 ONE PLACE TO MANAGE IT ALL
+
+  The YAMS dashboard shows every app's status, lets you read logs and restart any app, runs a
+  VPN leak check, and checks for newer versions. Home-screen widgets show VPN status, active
+  downloads and your library at a glance.
+
+
   Your library lives in the Files app under Downloads → media.
 developer: rogs (YAMS) · packaged for Umbrel by the community
 website: https://yams.media
@@ -51,7 +58,43 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  New app icon. qBittorrent is now pulled from Docker Hub, fixing installs that failed with
-  "toomanyrequests".
+  Fixes qBittorrent getting stuck on "Waiting for the VPN". New in the YAMS dashboard: logs and
+  restart for every app, a VPN leak check, a download list and an update check. Adds two
+  widgets for your Umbrel home screen.
+widgets:
+  - id: "stats"
+    type: "four-stats"
+    refresh: "5s"
+    endpoint: "dashboard:8000/widgets/stats"
+    link: ""
+    example:
+      type: "four-stats"
+      link: ""
+      items:
+        - title: "VPN"
+          text: "On"
+          subtext: "Canada"
+        - title: "Downloading"
+          text: "2"
+          subtext: "4.1 MB/s"
+        - title: "Shows"
+          text: "12"
+          subtext: "followed"
+        - title: "Movies"
+          text: "48"
+          subtext: "in library"
+  - id: "downloads"
+    type: "list"
+    refresh: "5s"
+    endpoint: "dashboard:8000/widgets/downloads"
+    link: ""
+    example:
+      type: "list"
+      link: ""
+      items:
+        - text: "42% • Some.Show.S01E03.1080p"
+          subtext: "↓ 3.1 MB/s • 12 min left"
+        - text: "7% • Some.Movie.2024.1080p"
+          subtext: "↓ 1.0 MB/s • 48 min left"
 submitter: Deepshah0308
 submission: https://github.com/Deepshah0308/yams-umbrel-store

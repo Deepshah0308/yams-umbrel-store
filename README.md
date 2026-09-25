@@ -42,6 +42,23 @@ That's it. There's nothing to build; every image is pulled from Docker Hub.
 
 The one thing left for you inside an app is picking subtitle languages in **Bazarr → Settings → Languages**.
 
+## Managing YAMS
+
+Once setup is done, the YAMS dashboard becomes the control panel for the whole stack (the equivalent of the `yams` command-line tool):
+
+| YAMS CLI | On Umbrel |
+|---|---|
+| `yams check-vpn` | **VPN check** compares your home address with the one downloads use, and confirms qBittorrent is inside the VPN |
+| `yams logs` | **Logs** on every app, live-updating, with errors highlighted and a Copy button |
+| `yams restart` | **Restart** on every app, or **Restart all** (the VPN is restarted before qBittorrent so it reconnects cleanly) |
+| `yams update` | **Check for updates** shows installed versus newest versions; the update itself arrives through Umbrel's **Update** button (see below) |
+
+Two widgets are available for the Umbrel home screen: a stats card (VPN, downloads, shows, movies) and a live list of active downloads. Right-click the home screen and choose **Edit widgets** to add them.
+
+**Why updates go through Umbrel.** umbrelOS recreates every container from the app's pinned `docker-compose.yml` whenever the app starts, restarts or updates. An in-app "pull latest" would be quietly undone at the next reboot, so versions are bumped in this repository instead. Each bump appears in Umbrel as an **Update** button for YAMS that updates every app at once.
+
+**Docker access.** The dashboard mounts the Docker socket so it can read logs and restart containers, the same approach Umbrel's Portainer and Dozzle apps use. It only ever acts on containers that belong to the YAMS app (by their Docker Compose project label), and can't restart itself.
+
 ## How it fits together
 
 ```
@@ -55,7 +72,7 @@ Umbrel login ──► web (Caddy) ─┬─ /            dashboard (setup + aut
 port 8097 ──► Jellyfin                          gluetun (WireGuard VPN)
 ```
 
-**Downloads can't leak.** qBittorrent runs inside gluetun's network, so its only route out is the VPN, and gluetun's firewall blocks everything else. On top of that, qBittorrent won't start until the VPN reports healthy, and a watchdog stops it within about 15 seconds if the VPN drops. When you switch VPN files, YAMS stops qBittorrent first, reconnects, then brings it back.
+**Downloads can't leak.** qBittorrent runs inside gluetun's network, so its only route out is the VPN, and gluetun's firewall blocks everything else. On top of that, qBittorrent won't start until the VPN tunnel (`tun0`) exists, and a watchdog stops it within about 10 seconds if the tunnel disappears. When you switch VPN files, YAMS stops qBittorrent first, reconnects, then brings it back.
 
 **Files** live in Umbrel's Downloads folder: `Downloads/torrents` (in progress) and `Downloads/media` (your library). Because both are on one mount, Sonarr and Radarr hardlink finished downloads instead of copying them, so seeding doesn't double your disk usage.
 
@@ -66,12 +83,13 @@ umbrel-app-store.yml          store id "yams"
 yams-media/
   umbrel-app.yml              listing shown in Umbrel
   docker-compose.yml          the stack
-  app/
+  hooks/yams/                 app code (lives under hooks/ because umbrelOS
+                              re-copies that folder on every app update)
     setup/seed.py             first boot: keys, passwords, starter configs, folders
-    dashboard/server.py       dashboard API + wires apps together via their APIs
+    dashboard/server.py       dashboard API, app wiring, Docker controls, widgets
     dashboard/index.html      the setup dashboard
     vpn/vpn-wrapper.sh        starts gluetun once a VPN file exists; reconnects on change
-    qbittorrent/entry.sh      holds qBittorrent until the VPN is healthy
+    qbittorrent/entry.sh      holds qBittorrent until the VPN tunnel is up
     qbittorrent/vpn-guard.sh  stops qBittorrent if the VPN drops
     Caddyfile                 routes every UI behind the Umbrel login
   data/                       persistent config (empty until first run)
@@ -79,10 +97,12 @@ yams-media/
 
 ## Troubleshooting
 
+- **qBittorrent says "Waiting for the VPN".** Open **Logs** on the **VPN** row. The last lines say why the tunnel isn't up (an expired key, an unreachable server). Downloading a fresh WireGuard file for another server fixes most cases.
+- **An app says "Keeps restarting".** Its row shows the last log line; open **Logs** for the full story.
 - **VPN says "Can't connect".** Download a file for a different server. Some providers' files expire, and a few (e.g. NordVPN) don't offer WireGuard downloads at all; Proton VPN, Mullvad and AirVPN all do.
 - **Port 8097 is taken.** Change `8097:8096` in `docker-compose.yml` and `JELLYFIN_PORT` on the dashboard service to the same new number.
 - **You changed the qBittorrent password.** Update it in Sonarr and Radarr under Settings → Download Clients.
-- **Logs.** Umbrel → right-click YAMS → Troubleshoot shows every container's logs. Lines starting with `[yams]` come from this package.
+- **Logs.** Use **Logs** on any app in the YAMS dashboard. Umbrel's own Troubleshoot view (right-click YAMS) works too. Lines starting with `[yams]` come from this package.
 - **Start over.** Uninstall YAMS (this deletes its settings, not your media in Downloads) and install again.
 
 ## Known limits

@@ -3,6 +3,10 @@ version: "3.7"
 # Container names on umbrelOS follow <app-id>_<service>_1, e.g. yams-media_sonarr_1.
 # Every web UI (except Jellyfin, which TV apps need to reach directly) is served through
 # the "web" service below, which sits behind your Umbrel login.
+#
+# App code lives in hooks/yams/ on purpose: umbrelOS re-copies the hooks folder on
+# every app update, but not other folders. Nothing in it is named like a hook
+# (pre-start, post-update, ...) so umbrelOS never executes it.
 
 x-common-env: &common-env
   PUID: "1000"
@@ -26,7 +30,7 @@ services:
     environment:
       APP_PREFIX: yams-media
     volumes:
-      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data:/yams
       - ${UMBREL_ROOT}/data/storage/downloads:/data
 
@@ -36,21 +40,24 @@ services:
     command: ["caddy", "run", "--config", "/app/Caddyfile", "--adapter", "caddyfile"]
     restart: on-failure
     volumes:
-      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/app:ro
 
-  # Setup dashboard + auto-configurator (plain Python, no custom image needed).
+  # Setup dashboard, auto-configurator, log viewer and app controls
+  # (plain Python, no custom image needed). It uses the Docker socket only to
+  # read logs from, inspect and restart this app's own containers.
   dashboard:
     image: python:3.12.14-alpine
     command: ["python", "-u", "/app/dashboard/server.py"]
-    user: "1000:1000"
     restart: on-failure
     environment:
       APP_PREFIX: yams-media
       JELLYFIN_PORT: "8097"
+      YAMS_VERSION: "1.1.0"
     volumes:
-      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data/state:/state
       - ${APP_DATA_DIR}/data/vpn/wireguard:/vpn
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       init:
         condition: service_completed_successfully
@@ -148,7 +155,7 @@ services:
       HTTP_CONTROL_SERVER_ADDRESS: ":8000"
       UPDATER_PERIOD: "0"
     volumes:
-      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data/vpn:/gluetun
 
   qbittorrent:
@@ -160,7 +167,7 @@ services:
       <<: *common-env
       WEBUI_PORT: "8080"
     volumes:
-      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/app:ro
       - ${APP_DATA_DIR}/data/config/qbittorrent:/config
       - ${APP_DATA_DIR}/data/vpn:/vpnstate:ro
       - ${UMBREL_ROOT}/data/storage/downloads:/data
