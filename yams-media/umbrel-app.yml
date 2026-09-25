@@ -2,9 +2,9 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.0.0"
+version: "1.0.1"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
-icon: https://yams.media/pics/logo.webp
+icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
   YAMS (Yet Another Media Server) packaged for umbrelOS as a single app. One install gives you
   a complete, pre-wired media server:
@@ -51,7 +51,7 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  First release: Jellyfin, Sonarr, Radarr, Prowlarr, Bazarr and VPN-protected qBittorrent,
-  auto-configured, with a step-by-step setup dashboard.
+  New app icon. qBittorrent is now pulled from Docker Hub, fixing installs that failed with
+  "toomanyrequests".
 submitter: Deepshah0308
 submission: https://github.com/Deepshah0308/yams-umbrel-store
