@@ -152,7 +152,7 @@ services:
       - ${APP_DATA_DIR}/data/vpn:/gluetun
 
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:5.2.3
+    image: linuxserver/qbittorrent:5.2.3@sha256:457e4eec2ee3f5e4ef59f237ad51f6143deba9f7445ab48bb5204a98888ef9aa
     entrypoint: ["/bin/sh", "/app/qbittorrent/entry.sh"]
     network_mode: "service:gluetun"
     restart: unless-stopped
