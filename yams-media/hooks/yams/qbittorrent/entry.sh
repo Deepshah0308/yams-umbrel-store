@@ -20,7 +20,7 @@ done
 echo "[yams] VPN tunnel is up. Starting qBittorrent."
 
 mkdir -p /custom-services.d
-cp /app/qbittorrent/vpn-guard.sh /custom-services.d/vpn-guard
+cp /yams-app/qbittorrent/vpn-guard.sh /custom-services.d/vpn-guard
 chown -R root:root /custom-services.d
 chmod 755 /custom-services.d /custom-services.d/vpn-guard
 

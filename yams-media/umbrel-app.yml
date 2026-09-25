@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.2.0"
+version: "1.2.1"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
 icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
@@ -59,9 +59,9 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  Backups, like `yams backup`: save every app's settings, logins and VPN file with one click or
-  automatically every day or week, and restore any backup from the YAMS dashboard. Backups are
-  kept in Downloads → yams-backups, where you can download them or copy them to a drive.
+  Fixes qBittorrent failing to start ("unable to exec /app/qbittorrent-nox"). Also includes
+  backups like `yams backup`: back up with one click or automatically, and restore from the
+  YAMS dashboard.
 widgets:
   - id: "stats"
     type: "four-stats"

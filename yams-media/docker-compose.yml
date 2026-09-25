@@ -52,7 +52,7 @@ services:
     environment:
       APP_PREFIX: yams-media
       JELLYFIN_PORT: "8097"
-      YAMS_VERSION: "1.2.0"
+      YAMS_VERSION: "1.2.1"
       DATA_DIR: /yams
       BACKUP_DIR: /backups
     volumes:
@@ -162,14 +162,15 @@ services:
 
   qbittorrent:
     image: linuxserver/qbittorrent:5.2.3@sha256:457e4eec2ee3f5e4ef59f237ad51f6143deba9f7445ab48bb5204a98888ef9aa
-    entrypoint: ["/bin/sh", "/app/qbittorrent/entry.sh"]
+    # YAMS scripts go in /yams-app, not /app: this image keeps qbittorrent-nox in /app.
+    entrypoint: ["/bin/sh", "/yams-app/qbittorrent/entry.sh"]
     network_mode: "service:gluetun"
     restart: unless-stopped
     environment:
       <<: *common-env
       WEBUI_PORT: "8080"
     volumes:
-      - ${APP_DATA_DIR}/hooks/yams:/app:ro
+      - ${APP_DATA_DIR}/hooks/yams:/yams-app:ro
       - ${APP_DATA_DIR}/data/config/qbittorrent:/config
       - ${APP_DATA_DIR}/data/vpn:/vpnstate:ro
       - ${UMBREL_ROOT}/data/storage/downloads:/data
