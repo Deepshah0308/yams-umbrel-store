@@ -1,0 +1,57 @@
+manifestVersion: 1.1
+id: yams-media
+category: media
+name: YAMS
+version: "1.0.0"
+tagline: Your own Netflix — movies, shows and subtitles, fully automatic
+icon: https://yams.media/pics/logo.webp
+description: >-
+  YAMS (Yet Another Media Server) packaged for umbrelOS as a single app. One install gives you
+  a complete, pre-wired media server:
+
+
+  🎬 Jellyfin — watch on your TV, phone, browser or console
+
+  📺 Sonarr — follows your TV shows and grabs new episodes
+
+  🍿 Radarr — finds and organises movies
+
+  🔍 Prowlarr + FlareSolverr — one place to manage where YAMS searches
+
+  💬 Bazarr — automatic subtitles
+
+  📥 qBittorrent — downloads, locked behind a VPN (gluetun) so nothing leaks if the VPN drops
+
+
+  ✨ WHAT'S ALREADY DONE FOR YOU
+
+  Every app is connected to every other app. Folders are laid out so files are hardlinked instead
+  of copied (no wasted disk space). Jellyfin is set up with Movies and Shows libraries. Sonarr and
+  Radarr already know about qBittorrent and Prowlarr. Everything sits behind your Umbrel login.
+
+
+  🛠️ AFTER INSTALLING
+
+  Open YAMS and follow the four steps on the dashboard: paste your VPN's WireGuard file, pick your
+  indexers in Prowlarr, add a show or movie, then start watching in Jellyfin (port 8097).
+
+
+  Your library lives in the Files app under Downloads → media.
+developer: rogs (YAMS) · packaged for Umbrel by the community
+website: https://yams.media
+dependencies: []
+repo: https://github.com/rogsme/yams
+support: https://github.com/Deepshah0308/yams-umbrel-store/issues
+port: 8746
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+torOnly: false
+permissions:
+  - STORAGE_DOWNLOADS
+releaseNotes: >-
+  First release: Jellyfin, Sonarr, Radarr, Prowlarr, Bazarr and VPN-protected qBittorrent,
+  auto-configured, with a step-by-step setup dashboard.
+submitter: Deepshah0308
+submission: https://github.com/Deepshah0308/yams-umbrel-store

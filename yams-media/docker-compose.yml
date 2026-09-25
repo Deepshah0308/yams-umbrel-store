@@ -1,0 +1,171 @@
+version: "3.7"
+
+# Container names on umbrelOS follow <app-id>_<service>_1, e.g. yams-media_sonarr_1.
+# Every web UI (except Jellyfin, which TV apps need to reach directly) is served through
+# the "web" service below, which sits behind your Umbrel login.
+
+x-common-env: &common-env
+  PUID: "1000"
+  PGID: "1000"
+  TZ: ${TZ:-Etc/UTC}
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: yams-media_web_1
+      APP_PORT: 8080
+
+  # ---------------------------------------------------------------------------
+  # One-shot setup: generates API keys and passwords, writes starter configs for
+  # every app and creates the media folders. Safe to re-run; never overwrites.
+  # ---------------------------------------------------------------------------
+  init:
+    image: python:3.12.14-alpine
+    command: ["python", "-u", "/app/setup/seed.py"]
+    restart: "no"
+    environment:
+      APP_PREFIX: yams-media
+    volumes:
+      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/data:/yams
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+
+  # Front door: routes /sonarr, /radarr, /prowlarr, /bazarr, /qbittorrent and the dashboard.
+  web:
+    image: caddy:2.11.4-alpine
+    command: ["caddy", "run", "--config", "/app/Caddyfile", "--adapter", "caddyfile"]
+    restart: on-failure
+    volumes:
+      - ${APP_DATA_DIR}/app:/app:ro
+
+  # Setup dashboard + auto-configurator (plain Python, no custom image needed).
+  dashboard:
+    image: python:3.12.14-alpine
+    command: ["python", "-u", "/app/dashboard/server.py"]
+    user: "1000:1000"
+    restart: on-failure
+    environment:
+      APP_PREFIX: yams-media
+      JELLYFIN_PORT: "8097"
+    volumes:
+      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/data/state:/state
+      - ${APP_DATA_DIR}/data/vpn/wireguard:/vpn
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # Watching
+  # ---------------------------------------------------------------------------
+  jellyfin:
+    image: linuxserver/jellyfin:10.11.11@sha256:c123ef2f82195e377d8ca3df275f13f9dfa5c6e61b195958662b42b5e54362ab
+    restart: on-failure
+    environment:
+      <<: *common-env
+    volumes:
+      - ${APP_DATA_DIR}/data/config/jellyfin:/config
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+    ports:
+      # Jellyfin keeps its own logins so TV and phone apps can connect directly:
+      # http://umbrel.local:8097
+      - 8097:8096
+
+  # ---------------------------------------------------------------------------
+  # Finding and organising
+  # ---------------------------------------------------------------------------
+  sonarr:
+    image: linuxserver/sonarr:4.0.20@sha256:a5c1a5fecbef946927ab90ad68df319ac5fe644057e5fc18cd993f01ac07b2b2
+    restart: on-failure
+    environment:
+      <<: *common-env
+    volumes:
+      - ${APP_DATA_DIR}/data/config/sonarr:/config
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  radarr:
+    image: linuxserver/radarr:6.4.4@sha256:c960f2b52ec6542dbe6707c5a21e696a7c74fd8b17997454f4d10a55dacee133
+    restart: on-failure
+    environment:
+      <<: *common-env
+    volumes:
+      - ${APP_DATA_DIR}/data/config/radarr:/config
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  prowlarr:
+    image: linuxserver/prowlarr:version-2.6.5.5623@sha256:c96b56d94d116a9f4de94bc23d3381689492e6c3cfb7435320e8d982e406f99a
+    restart: on-failure
+    environment:
+      <<: *common-env
+    volumes:
+      - ${APP_DATA_DIR}/data/config/prowlarr:/config
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  flaresolverr:
+    image: flaresolverr/flaresolverr:v3.4.6@sha256:7962759d99d7e125e108e0f5e7f3cdbcd36161776d058d1d9b7153b92ef1af9e
+    restart: on-failure
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+
+  bazarr:
+    image: linuxserver/bazarr:1.6.1@sha256:d24bd0048c759a468970989e9df11a6b96a7628d556d00f923e60a35ba59237b
+    restart: on-failure
+    environment:
+      <<: *common-env
+    volumes:
+      - ${APP_DATA_DIR}/data/config/bazarr:/config
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------------------
+  # Downloading — qBittorrent lives *inside* the VPN container's network.
+  # It only starts once the VPN is healthy and shuts itself down if the VPN drops.
+  # ---------------------------------------------------------------------------
+  gluetun:
+    image: qmcgaw/gluetun:v3.41.3
+    entrypoint: ["/bin/sh", "/app/vpn/vpn-wrapper.sh"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      VPN_SERVICE_PROVIDER: custom
+      VPN_TYPE: wireguard
+      # Let the dashboard (8000) and Sonarr/Radarr (8080) reach in from the Umbrel network
+      FIREWALL_INPUT_PORTS: "8080,8000"
+      HTTP_CONTROL_SERVER_ADDRESS: ":8000"
+      UPDATER_PERIOD: "0"
+    volumes:
+      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/data/vpn:/gluetun
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:5.2.3
+    entrypoint: ["/bin/sh", "/app/qbittorrent/entry.sh"]
+    network_mode: "service:gluetun"
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      WEBUI_PORT: "8080"
+    volumes:
+      - ${APP_DATA_DIR}/app:/app:ro
+      - ${APP_DATA_DIR}/data/config/qbittorrent:/config
+      - ${APP_DATA_DIR}/data/vpn:/vpnstate:ro
+      - ${UMBREL_ROOT}/data/storage/downloads:/data
+    depends_on:
+      gluetun:
+        condition: service_started
+      init:
+        condition: service_completed_successfully
