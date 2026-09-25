@@ -275,6 +275,31 @@
   .tag.unknown, .tag.unreachable { color: var(--dust); font-weight: 400; }
   .table-wrap { overflow-x: auto; margin-top: 1rem; }
 
+  /* ---------- backups ---------- */
+  .field { display: inline-flex; align-items: center; gap: .5rem; font-size: .95rem; color: var(--dust); }
+  .field select {
+    background: var(--night); color: var(--paper); border: 2px solid var(--seam); border-radius: 999px;
+    padding: .35rem .7rem; font: 700 .92rem var(--body);
+  }
+  .job { display: flex; gap: .55rem; align-items: baseline; margin: 1rem 0 0; font-size: .95rem; }
+  .job .dot { flex: none; transform: translateY(-1px); }
+  .job.busy .dot { background: var(--bulb); animation: pulse 1s ease-in-out infinite alternate; }
+  .job.good { color: var(--go); }
+  .job.good .dot { background: var(--go); }
+  .job.bad { color: var(--stop); }
+  .job.bad .dot { background: var(--stop); }
+  ul.backups { list-style: none; margin: 1rem 0 0; padding: 0; border-top: 1px solid var(--seam); }
+  ul.backups li { display: flex; gap: .3rem 1rem; align-items: center; justify-content: space-between; padding: .7rem 0; border-bottom: 1px solid var(--seam); }
+  ul.backups li > span:first-child { min-width: 0; }
+  .bk-actions a.link-btn { text-decoration: none; }
+  .bk-when { font-weight: 700; }
+  .bk-when { white-space: nowrap; }
+  .bk-meta { display: block; color: var(--dust); font-size: .9rem; font-weight: 400; }
+  .bk-actions { display: flex; gap: 1rem; flex: none; }
+  .bk-actions .danger { color: var(--stop); }
+  .bk-actions .link-btn[disabled] { color: var(--dust); opacity: .6; }
+  .upload-row { margin-top: 1rem; }
+
   /* ---------- log viewer ---------- */
   dialog.logs {
     width: min(64rem, calc(100vw - 2rem)); height: min(44rem, calc(100vh - 2rem));
@@ -306,6 +331,7 @@
     .app-actions { grid-row: auto; grid-column: 1; justify-content: flex-start; margin-top: .5rem; }
     dialog.logs { width: 100vw; height: 100vh; max-width: none; max-height: none; border-radius: 0; }
     .app-state { margin-left: 0; display: flex; }
+    ul.backups li { flex-wrap: wrap; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
@@ -434,6 +460,34 @@
         <tbody id="updates"></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="section-head">
+    <h2 class="section-title">Backups</h2>
+    <button class="link-btn" id="backup-now" type="button">Back up now</button>
+  </div>
+  <div class="panel">
+    <p class="muted small">Saves every app's settings, history, logins and your VPN file, like <code>yams backup</code>. Apps pause for a moment while it's written. Your movies and shows aren't included; they stay in Downloads → media. Backups are kept in <strong>Downloads → yams-backups</strong>.</p>
+    <div class="row">
+      <label class="field">Automatic backups
+        <select id="backup-schedule">
+          <option value="off">Off</option>
+          <option value="daily">Every day</option>
+          <option value="weekly">Every week</option>
+        </select>
+      </label>
+      <label class="field">Keep the last
+        <select id="backup-keep"><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
+      </label>
+    </div>
+    <p class="job" id="backup-job" hidden><span class="dot"></span><span id="backup-job-text"></span></p>
+    <ul class="backups" id="backup-list"></ul>
+    <p class="empty small" id="backup-empty" style="margin-top:1rem">No backups yet.</p>
+    <div class="row upload-row">
+      <label class="btn quiet small file">Upload a backup<input type="file" id="backup-upload" accept=".gz,.tgz,application/gzip"></label>
+      <span class="muted small" id="upload-status">Or copy one into Downloads → yams-backups with the Files app.</span>
+    </div>
+    <p class="muted small" style="margin:1rem 0 0">Backups contain your passwords and VPN key, so keep copies somewhere private.</p>
   </div>
 
   <div class="section-head"><h2 class="section-title">Your login</h2></div>
@@ -610,12 +664,90 @@ function renderSteps(s) {
   $("ticker").classList.toggle("done", setupDone);
 }
 
+// ---------------------------------------------------------------- backups
+const fmtSize = (b) => b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+const fmtWhen = (t) => new Date(t * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+let backupSettingsSet = false;
+function renderBackups(s) {
+  const b = s.backup;
+  if (!b) return;
+  const job = b.job, el = $("backup-job");
+  if (job.active) { el.hidden = false; el.className = "job busy"; $("backup-job-text").textContent = job.step || "Working\u2026"; }
+  else if (job.error) { el.hidden = false; el.className = "job bad"; $("backup-job-text").textContent = job.error; }
+  else if (job.message) { el.hidden = false; el.className = "job good"; $("backup-job-text").textContent = job.message; }
+  else el.hidden = true;
+  $("backup-now").disabled = job.active;
+  $("backup-now").textContent = job.active && job.kind === "backup" ? "Backing up\u2026" : "Back up now";
+  if (!backupSettingsSet) {
+    $("backup-schedule").value = b.settings.schedule;
+    $("backup-keep").value = String(b.settings.keep);
+    backupSettingsSet = true;
+  }
+  $("backup-keep").closest(".field").hidden = b.settings.schedule === "off";
+  $("backup-empty").hidden = b.items.length > 0;
+  $("backup-list").innerHTML = b.items.map((x) => `
+    <li>
+      <span><span class="bk-when">${esc(fmtWhen(x.created))}</span><span class="bk-meta">${esc(x.label_text)} \u00b7 ${fmtSize(x.size)}</span></span>
+      <span class="bk-actions">
+        <a class="link-btn" href="api/backups/download?name=${encodeURIComponent(x.name)}">Download</a>
+        <button class="link-btn" type="button" data-restore="${esc(x.name)}" ${job.active ? "disabled" : ""}>Restore</button>
+        <button class="link-btn danger" type="button" data-delete="${esc(x.name)}" ${job.active ? "disabled" : ""}>Delete</button>
+      </span>
+    </li>`).join("");
+}
+$("backup-list").addEventListener("click", async (e) => {
+  const restoreName = e.target.dataset.restore, deleteName = e.target.dataset.delete;
+  if (restoreName) {
+    const row = e.target.closest("li").querySelector(".bk-when").textContent;
+    if (!confirm(`Restore the backup from ${row}?\n\nYAMS saves a safety copy of your current setup first, then replaces every app's settings with the ones in this backup. Apps restart, which takes a minute or two.`)) return;
+    try { await post("api/backups/restore", { name: restoreName }); } catch (err) { alert(err.message); }
+    refresh();
+  }
+  if (deleteName) {
+    if (!confirm("Delete this backup? This can't be undone.")) return;
+    try { await post("api/backups/delete", { name: deleteName }); } catch (err) { alert(err.message); }
+    refresh();
+  }
+});
+$("backup-now").addEventListener("click", async () => {
+  try { await post("api/backups/create"); } catch (err) { alert(err.message); }
+  setTimeout(refresh, 300);
+});
+async function saveBackupSettings() {
+  try { await post("api/backups/settings", { schedule: $("backup-schedule").value, keep: Number($("backup-keep").value) }); }
+  catch (err) { alert(err.message); }
+  refresh();
+}
+$("backup-schedule").addEventListener("change", saveBackupSettings);
+$("backup-keep").addEventListener("change", saveBackupSettings);
+$("backup-upload").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const status = $("upload-status");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "api/backups/upload");
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) status.textContent = `Uploading ${file.name}\u2026 ${Math.floor(ev.loaded / ev.total * 100)}%`; };
+  xhr.onload = () => {
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    status.textContent = xhr.status === 200 ? "Uploaded. Choose Restore next to it when you're ready." : (data.error || "The upload didn't work. Try copying it in with the Files app instead.");
+    refresh();
+  };
+  xhr.onerror = () => { status.textContent = "The upload didn't work. Try copying it in with the Files app instead."; };
+  status.textContent = `Uploading ${file.name}\u2026`;
+  xhr.send(file);
+});
+
 function render(s) {
   state = s;
   $("version").textContent = s.version ? `\u00b7 v${s.version}` : "";
   renderSteps(s);
   renderDownloads(s);
   renderApps(s);
+  renderBackups(s);
   $("user").textContent = s.login.username || "…";
   $("pass").textContent = s.login.password || "…";
   if (!$("log-service").options.length) {
