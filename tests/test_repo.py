@@ -1,5 +1,6 @@
 """Checks on the package itself, so a release can't go out half-finished."""
 import glob
+import re
 import os
 import py_compile
 import subprocess
@@ -63,3 +64,43 @@ def test_python_compiles():
 def test_shell_scripts_parse():
     for path in glob.glob(os.path.join(HOOKS, "**", "*.sh"), recursive=True):
         subprocess.run(["sh", "-n", path], check=True)
+
+
+def test_media_apps_are_not_on_the_shared_umbrel_network():
+    services = load(os.path.join(APP, "docker-compose.yml"))["services"]
+    for name in ("jellyfin", "sonarr", "radarr", "prowlarr", "bazarr", "flaresolverr", "gluetun", "init"):
+        assert services[name].get("networks") == ["yams"], f"{name} must only be on the private yams network"
+    assert set(services["web"]["networks"]) == {"default", "yams"}
+    assert set(services["dashboard"]["networks"]) == {"default", "yams"}
+
+
+def test_router_reaches_the_dashboard_only_through_its_socket():
+    with open(os.path.join(HOOKS, "yams", "Caddyfile")) as fh:
+        caddy = fh.read()
+    assert "unix//sock/dashboard.sock" in caddy
+    assert "dashboard_1:8000" not in caddy
+
+
+# Things that must never be committed: YAMS-style passwords (four words and a number),
+# WireGuard private keys, and 32-character API keys.
+SECRET_PATTERNS = [
+    re.compile(r"\b[a-z]{3,10}(?:-[a-z]{3,10}){3}-\d{2}\b"),
+    re.compile(r"PrivateKey\s*=\s*[A-Za-z0-9+/]{42,43}="),
+    re.compile(r"(?i)(api[_-]?key|apikey)[\"'>:= ]+[0-9a-f]{32}\b"),
+]
+
+
+def test_no_secrets_in_the_repository():
+    found = []
+    for path in glob.glob(os.path.join(ROOT, "**", "*"), recursive=True):
+        if not os.path.isfile(path) or "/.git/" in path or "__pycache__" in path:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for pattern in SECRET_PATTERNS:
+            for match in pattern.finditer(text):
+                found.append(f"{os.path.relpath(path, ROOT)}: {match.group(0)[:12]}…")
+    assert not found, "Possible secrets committed:\n" + "\n".join(found)
