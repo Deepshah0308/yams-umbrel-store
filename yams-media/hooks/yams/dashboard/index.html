@@ -23,6 +23,7 @@
     --radius: 10px;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html { background: var(--night); }
   body {
     margin: 0;
@@ -300,6 +301,19 @@
   .bk-actions .link-btn[disabled] { color: var(--dust); opacity: .6; }
   .upload-row { margin-top: 1rem; }
 
+  /* ---------- quick fixes ---------- */
+  ul.fixes { list-style: none; margin: .4rem 0 0; padding: 0; }
+  ul.fixes li { display: grid; grid-template-columns: 1fr auto; gap: .15rem 1rem; align-items: center; padding: .75rem 0; border-top: 1px solid var(--seam); }
+  ul.fixes li:first-child { border-top: 0; }
+  .fix-name { font-weight: 700; }
+  .fix-what { color: var(--dust); font-size: .92rem; grid-column: 1; }
+  .fix-result { grid-column: 1 / -1; font-size: .92rem; margin-top: .25rem; }
+  .fix-result.good { color: var(--go); }
+  .fix-result.bad { color: var(--stop); }
+  .fix-result.busy { color: var(--bulb); }
+  ul.fixes .btn { grid-row: 1 / span 2; grid-column: 2; }
+  .updates .btn.small { padding: .3rem .8rem; }
+
   /* ---------- log viewer ---------- */
   dialog.logs {
     width: min(64rem, calc(100vw - 2rem)); height: min(44rem, calc(100vh - 2rem));
@@ -332,6 +346,8 @@
     dialog.logs { width: 100vw; height: 100vh; max-width: none; max-height: none; border-radius: 0; }
     .app-state { margin-left: 0; display: flex; }
     ul.backups li { flex-wrap: wrap; }
+    ul.fixes li { grid-template-columns: 1fr; }
+    ul.fixes .btn { grid-row: auto; grid-column: 1; justify-self: start; margin-top: .4rem; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
@@ -433,6 +449,15 @@
   <p class="muted small" id="docker-note" hidden>YAMS can't reach Docker, so logs and restarts are unavailable. Reinstalling the app usually fixes this.</p>
 
   <div class="section-head">
+    <h2 class="section-title">Quick fixes</h2>
+    <button class="link-btn" id="fix-all" type="button">Fix everything</button>
+  </div>
+  <div class="panel">
+    <p class="muted small" style="margin:0">Safe to press any time. Each fix checks first and only changes what's wrong.</p>
+    <ul class="fixes" id="fixes"></ul>
+  </div>
+
+  <div class="section-head">
     <h2 class="section-title">VPN check</h2>
   </div>
   <div class="panel">
@@ -453,10 +478,17 @@
     <button class="link-btn" id="updates-check" type="button">Check for updates</button>
   </div>
   <div class="panel">
-    <p class="muted small" style="margin:0">Umbrel keeps these versions fixed so everything keeps working together. When a new YAMS release is published, Umbrel shows an <strong>Update</strong> button for YAMS, and one click updates every app.</p>
+    <p class="muted small">YAMS checks Docker Hub for newer versions of each app. Updating backs up your settings first, then swaps each app for its newest version, keeping all your settings. You don't need to wait for a new YAMS release.</p>
+    <div class="row">
+      <button class="btn" id="updates-apply" type="button" hidden>Update all apps</button>
+      <label class="field">Automatic updates
+        <select id="updates-auto"><option value="off">Off</option><option value="weekly">Every week</option></select>
+      </label>
+    </div>
+    <p class="job" id="update-job" hidden><span class="dot"></span><span id="update-job-text"></span></p>
     <div class="table-wrap" id="updates-wrap" hidden>
       <table class="updates">
-        <thead><tr><th>App</th><th>Installed</th><th>Newest</th><th></th></tr></thead>
+        <thead><tr><th>App</th><th>Version</th><th></th><th></th></tr></thead>
         <tbody id="updates"></tbody>
       </table>
     </div>
@@ -494,9 +526,13 @@
   <div class="login">
     <dl>
       <div class="cred"><dt>Username</dt><dd id="user">…</dd><button class="copy" type="button" data-copy="user">Copy</button></div>
-      <div class="cred"><dt>Password</dt><dd id="pass">…</dd><button class="copy" type="button" data-copy="pass">Copy</button></div>
+      <div class="cred"><dt>Password</dt><dd id="pass" data-secret>••••••••••••</dd><button class="copy" type="button" id="pass-show">Show</button><button class="copy" type="button" data-copy="pass">Copy</button></div>
     </dl>
-    <p class="muted small" style="margin:0">Used for Jellyfin and qBittorrent. Everything else is protected by your Umbrel login.</p>
+    <p class="muted small">Used for Jellyfin and qBittorrent. Everything else is protected by your Umbrel login. Keep it out of screenshots and chats.</p>
+    <div class="row">
+      <button class="btn quiet small" id="pass-change" type="button">Change password</button>
+      <span class="small" id="pass-job" hidden></span>
+    </div>
   </div>
 
   <footer>
@@ -567,7 +603,7 @@ function renderApps(s) {
 }
 
 async function post(url, body) {
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Yams-Request": "1" }, body: JSON.stringify(body || {}) });
   let data = {};
   try { data = await res.json(); } catch (_) {}
   if (!res.ok) throw new Error(data.error || "That didn't work.");
@@ -728,6 +764,7 @@ $("backup-upload").addEventListener("change", (e) => {
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "api/backups/upload");
   xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.setRequestHeader("X-Yams-Request", "1");
   xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
   xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) status.textContent = `Uploading ${file.name}\u2026 ${Math.floor(ev.loaded / ev.total * 100)}%`; };
   xhr.onload = () => {
@@ -747,9 +784,19 @@ function render(s) {
   renderSteps(s);
   renderDownloads(s);
   renderApps(s);
+  renderFixes(s);
+  renderUpdates(s);
   renderBackups(s);
   $("user").textContent = s.login.username || "…";
-  $("pass").textContent = s.login.password || "…";
+  passwordValue = s.login.password || "";
+  $("pass").textContent = passwordShown ? passwordValue : "\u2022".repeat(12);
+  const pj = s.password_job, pjEl = $("pass-job");
+  pjEl.hidden = !pj;
+  if (pj) {
+    pjEl.className = `small fix-result ${pj.running ? "busy" : pj.ok ? "good" : "bad"}`;
+    pjEl.textContent = pj.message || "";
+  }
+  $("pass-change").disabled = !!(pj && pj.running) || !!s.busy_all;
   if (!$("log-service").options.length) {
     $("log-service").innerHTML = s.log_services.map((x) => `<option value="${esc(x.service)}">${esc(x.name)}</option>`).join("");
   }
@@ -838,23 +885,117 @@ $("vpn-check").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------- updates
+const UPDATE_LABELS = { current: "Up to date", update: "Update available", pinned: "Fixed version",
+  unreachable: "Couldn't check", missing: "Not installed", unknown: "Unknown" };
+let updateSettingSet = false;
+function renderUpdateTable(check, busy) {
+  if (!check) return;
+  $("updates-wrap").hidden = false;
+  $("updates").innerHTML = check.apps.map((a) => `
+    <tr><td>${esc(a.name)}</td><td class="mono">${esc(a.version || "\u2014")}</td>
+    <td><span class="tag ${a.status}">${UPDATE_LABELS[a.status] || a.status}</span></td>
+    <td>${a.status === "update" ? `<button class="btn quiet small" type="button" data-update="${esc(a.service)}" ${busy ? "disabled" : ""}>Update</button>` : ""}</td></tr>`).join("");
+  const n = check.available.length;
+  $("updates-apply").hidden = n === 0;
+  $("updates-apply").textContent = n === 1 ? "Update 1 app" : `Update ${n} apps`;
+}
+function renderUpdates(s) {
+  const u = s.updates;
+  if (!u) return;
+  const job = u.job, el = $("update-job");
+  if (job.active) { el.hidden = false; el.className = "job busy"; $("update-job-text").textContent = job.step || "Working\u2026"; }
+  else if (job.error) { el.hidden = false; el.className = "job bad"; $("update-job-text").textContent = job.error; }
+  else if (job.message) { el.hidden = false; el.className = "job good"; $("update-job-text").textContent = job.message; }
+  else el.hidden = true;
+  const busy = job.active || !!s.busy_all;
+  $("updates-apply").disabled = busy;
+  $("updates-check").disabled = job.active;
+  if (!updateSettingSet) { $("updates-auto").value = u.settings.auto; updateSettingSet = true; }
+  renderUpdateTable(u.check, busy);
+}
+async function applyUpdates(services) {
+  const what = services ? `${services.length === 1 ? "this app" : "these apps"}` : "every app with a newer version";
+  if (!confirm(`Update ${what}?\n\nYAMS backs up your settings first. Each app is offline for a moment while it's swapped for the new version.`)) return;
+  try { await post("api/updates/apply", services ? { services } : {}); } catch (err) { alert(err.message); }
+  refresh();
+}
 $("updates-check").addEventListener("click", async () => {
   const btn = $("updates-check");
-  btn.disabled = true; btn.textContent = "Checking…";
+  btn.disabled = true; btn.textContent = "Checking\u2026";
   try {
     const res = await fetch("api/updates?refresh=1", { cache: "no-store" });
-    const data = await res.json();
-    $("updates-wrap").hidden = false;
-    const labels = { current: "Up to date", update: "Newer version out", unknown: "Unknown", unreachable: "Couldn't check" };
-    $("updates").innerHTML = data.apps.map((a) => `
-      <tr><td>${esc(a.name)}</td><td class="mono">${esc(a.installed || "—")}</td><td class="mono">${esc(a.latest || "—")}</td>
-      <td><span class="tag ${a.status}">${labels[a.status] || a.status}</span></td></tr>`).join("");
+    renderUpdateTable(await res.json(), false);
   } catch (_) {
     alert("Couldn't check for updates right now.");
   } finally {
     btn.disabled = false; btn.textContent = "Check again";
   }
 });
+$("updates-apply").addEventListener("click", () => applyUpdates(null));
+$("updates").addEventListener("click", (e) => { if (e.target.dataset.update) applyUpdates([e.target.dataset.update]); });
+$("updates-auto").addEventListener("change", async () => {
+  try { await post("api/updates/settings", { auto: $("updates-auto").value }); } catch (err) { alert(err.message); }
+});
+
+// ---------------------------------------------------------------- quick fixes
+const FIX_HELP = {
+  prowlarr: "Links Prowlarr to both apps and syncs your indexers to them.",
+  qbittorrent: "Adds qBittorrent as their download client and tests the connection.",
+  folders: "Recreates the media folders and sets Sonarr, Radarr and Jellyfin to use them.",
+  rescan: "For when something finished downloading but isn't showing in Jellyfin.",
+  search: "Looks for everything on your wanted lists right now instead of waiting.",
+  vpn: "Restarts the VPN, then qBittorrent. Try this if downloads are stuck.",
+};
+const fixRows = {};
+function renderFixes(s) {
+  if (!s.fixes) return;
+  const busy = !!s.busy_all;
+  const anyRunning = s.fixes.some((f) => f.running);
+  for (const f of s.fixes) {
+    if (f.id === "all") {
+      $("fix-all").disabled = anyRunning || busy;
+      $("fix-all").textContent = f.running ? "Fixing\u2026" : "Fix everything";
+      continue;
+    }
+    let li = fixRows[f.id];
+    if (!li) {
+      li = document.createElement("li");
+      li.innerHTML = `<span class="fix-name">${esc(f.label)}</span><span class="fix-what">${esc(FIX_HELP[f.id] || "")}</span>
+        <button class="btn quiet small" type="button">Run</button><span class="fix-result" hidden></span>`;
+      li.querySelector("button").addEventListener("click", () => runFix(f.id));
+      $("fixes").appendChild(li);
+      fixRows[f.id] = li;
+    }
+    const btn = li.querySelector("button");
+    btn.disabled = anyRunning || busy;
+    btn.textContent = f.running ? "Running\u2026" : "Run";
+    const r = li.querySelector(".fix-result");
+    const all = s.fixes.find((x) => x.id === "all");
+    const show = f.running || f.message;
+    r.hidden = !show;
+    r.className = `fix-result ${f.running ? "busy" : f.ok ? "good" : "bad"}`;
+    r.textContent = f.running ? "Working\u2026" : (f.message || "");
+    if (all && all.message && all.at > (f.at || 0)) { r.hidden = true; }
+  }
+  const all = s.fixes.find((x) => x.id === "all");
+  const allRow = $("fix-all-result");
+  if (all && (all.running || all.message)) {
+    let el = allRow;
+    if (!el) {
+      el = document.createElement("p");
+      el.id = "fix-all-result";
+      el.className = "fix-result";
+      $("fixes").before(el);
+    }
+    el.className = `fix-result ${all.running ? "busy" : all.ok ? "good" : "bad"}`;
+    el.textContent = all.running ? "Checking and fixing everything\u2026" : all.message;
+  }
+}
+async function runFix(id) {
+  try { await post("api/fix", { fix: id }); } catch (err) { alert(err.message); }
+  setTimeout(refresh, 300);
+}
+$("fix-all").addEventListener("click", () => runFix("all"));
 
 // ---------------------------------------------------------------- VPN save
 async function saveVpn() {
@@ -887,7 +1028,8 @@ $("vpn-file").addEventListener("change", async (e) => {
 // ---------------------------------------------------------------- copy login
 document.querySelectorAll("[data-copy]").forEach((btn) => {
   btn.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText($(btn.dataset.copy).textContent); btn.textContent = "Copied"; }
+    const value = btn.dataset.copy === "pass" ? passwordValue : $(btn.dataset.copy).textContent;
+    try { await navigator.clipboard.writeText(value); btn.textContent = "Copied"; }
     catch (_) {
       const range = document.createRange();
       range.selectNodeContents($(btn.dataset.copy));
@@ -896,6 +1038,19 @@ document.querySelectorAll("[data-copy]").forEach((btn) => {
     }
     setTimeout(() => (btn.textContent = "Copy"), 1600);
   });
+});
+
+// ---------------------------------------------------------------- password
+let passwordValue = "", passwordShown = false;
+$("pass-show").addEventListener("click", () => {
+  passwordShown = !passwordShown;
+  $("pass-show").textContent = passwordShown ? "Hide" : "Show";
+  $("pass").textContent = passwordShown ? passwordValue : "\u2022".repeat(12);
+});
+$("pass-change").addEventListener("click", async () => {
+  if (!confirm("Make a new password?\n\nYAMS updates Jellyfin, qBittorrent, Sonarr and Radarr together. qBittorrent restarts for a moment, and you'll need to sign in again on your TV and phone apps.")) return;
+  try { await post("api/password"); } catch (err) { alert(err.message); }
+  setTimeout(refresh, 300);
 });
 
 refresh();
