@@ -2,7 +2,7 @@ manifestVersion: 1.1
 id: yams-media
 category: media
 name: YAMS
-version: "1.1.0"
+version: "1.2.0"
 tagline: Your own Netflix — movies, shows and subtitles, fully automatic
 icon: https://cdn.jsdelivr.net/gh/Deepshah0308/yams-umbrel-store@2ab2cefa8bb057c5ec148cb63b83520c17846058/yams-media/icon.svg
 description: >-
@@ -39,7 +39,8 @@ description: >-
   🧰 ONE PLACE TO MANAGE IT ALL
 
   The YAMS dashboard shows every app's status, lets you read logs and restart any app, runs a
-  VPN leak check, and checks for newer versions. Home-screen widgets show VPN status, active
+  VPN leak check, checks for newer versions, and backs up and restores all your settings
+  (on demand or automatically every day or week). Home-screen widgets show VPN status, active
   downloads and your library at a glance.
 
 
@@ -58,9 +59,9 @@ torOnly: false
 permissions:
   - STORAGE_DOWNLOADS
 releaseNotes: >-
-  Fixes qBittorrent getting stuck on "Waiting for the VPN". New in the YAMS dashboard: logs and
-  restart for every app, a VPN leak check, a download list and an update check. Adds two
-  widgets for your Umbrel home screen.
+  Backups, like `yams backup`: save every app's settings, logins and VPN file with one click or
+  automatically every day or week, and restore any backup from the YAMS dashboard. Backups are
+  kept in Downloads → yams-backups, where you can download them or copy them to a drive.
 widgets:
   - id: "stats"
     type: "four-stats"

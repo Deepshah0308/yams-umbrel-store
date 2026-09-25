@@ -51,9 +51,16 @@ Once setup is done, the YAMS dashboard becomes the control panel for the whole s
 | `yams check-vpn` | **VPN check** compares your home address with the one downloads use, and confirms qBittorrent is inside the VPN |
 | `yams logs` | **Logs** on every app, live-updating, with errors highlighted and a Copy button |
 | `yams restart` | **Restart** on every app, or **Restart all** (the VPN is restarted before qBittorrent so it reconnects cleanly) |
+| `yams backup` | **Backups**: back up on demand or automatically (daily or weekly, keeping the last 3, 5 or 10), and **Restore** any backup with one click |
 | `yams update` | **Check for updates** shows installed versus newest versions; the update itself arrives through Umbrel's **Update** button (see below) |
 
 Two widgets are available for the Umbrel home screen: a stats card (VPN, downloads, shows, movies) and a live list of active downloads. Right-click the home screen and choose **Edit widgets** to add them.
+
+**Backups** work like `yams backup`: apps pause for a moment so their databases are saved cleanly, then every app's settings and history, your logins and API keys, and your VPN file go into one `.tar.gz` in **Downloads → yams-backups**. Caches, logs and cover art are left out (they rebuild themselves), and your media files are never included. Automatic backups run between 3 and 5 AM, Umbrel's clock.
+
+Restoring checks the file first: it must be a YAMS for Umbrel backup that contains nothing but app settings, or it's refused before anything stops. YAMS then saves a safety backup of your current setup, swaps the restored settings in and starts the apps. If anything fails part-way, the previous settings are put back. You can restore on a fresh install too: install YAMS, upload your backup (or copy it into Downloads → yams-backups with the Files app) and choose **Restore**.
+
+Backups contain your passwords and VPN key, so keep copies somewhere private.
 
 **Why updates go through Umbrel.** umbrelOS recreates every container from the app's pinned `docker-compose.yml` whenever the app starts, restarts or updates. An in-app "pull latest" would be quietly undone at the next reboot, so versions are bumped in this repository instead. Each bump appears in Umbrel as an **Update** button for YAMS that updates every app at once.
 
@@ -87,6 +94,7 @@ yams-media/
                               re-copies that folder on every app update)
     setup/seed.py             first boot: keys, passwords, starter configs, folders
     dashboard/server.py       dashboard API, app wiring, Docker controls, widgets
+    dashboard/backups.py      backup, restore and the backup schedule
     dashboard/index.html      the setup dashboard
     vpn/vpn-wrapper.sh        starts gluetun once a VPN file exists; reconnects on change
     qbittorrent/entry.sh      holds qBittorrent until the VPN tunnel is up
@@ -103,7 +111,8 @@ yams-media/
 - **Port 8097 is taken.** Change `8097:8096` in `docker-compose.yml` and `JELLYFIN_PORT` on the dashboard service to the same new number.
 - **You changed the qBittorrent password.** Update it in Sonarr and Radarr under Settings → Download Clients.
 - **Logs.** Use **Logs** on any app in the YAMS dashboard. Umbrel's own Troubleshoot view (right-click YAMS) works too. Lines starting with `[yams]` come from this package.
-- **Start over.** Uninstall YAMS (this deletes its settings, not your media in Downloads) and install again.
+- **Start over.** Back up first, then uninstall YAMS (this deletes its settings, not your media or backups in Downloads) and install again. Restore the backup if you want your settings back.
+- **A restore went wrong.** Every restore first saves a "Before restore" backup; restore that one to get back to where you were.
 
 ## Known limits
 

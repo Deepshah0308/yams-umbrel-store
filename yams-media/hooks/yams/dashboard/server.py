@@ -10,6 +10,7 @@ Pure standard-library Python so it runs on the stock python:alpine image.
   * Accepts a pasted WireGuard file and turns it into something gluetun accepts.
   * Talks to Docker (only this app's containers) for status, logs and restarts.
   * Serves the Umbrel home-screen widgets.
+  * Backs up and restores every app's settings (see backups.py).
 """
 import configparser
 import http.client as httpclient
@@ -26,11 +27,13 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import backups
+
 PREFIX = os.environ.get("APP_PREFIX", "yams-media")
 JELLYFIN_PORT = os.environ.get("JELLYFIN_PORT", "8097")
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.environ.get("STATE_DIR", "/state")
-WG_PATH = os.environ.get("WG_PATH", "/vpn/wg0.conf")
+STATE_DIR = os.environ.get("STATE_DIR", "/yams/state")
+WG_PATH = os.environ.get("WG_PATH", "/yams/vpn/wireguard/wg0.conf")
 YAMS_VERSION = os.environ.get("YAMS_VERSION", "")
 DOCKER_SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 SECRETS_PATH = f"{STATE_DIR}/secrets.json"
@@ -562,6 +565,42 @@ def restart_all():
         set_busy("_all", None)
 
 
+# Order matters: qBittorrent stops before the VPN and starts after it.
+PAUSE_ORDER = ["qbittorrent", "sonarr", "radarr", "prowlarr", "bazarr", "jellyfin"]
+
+
+def pause_apps(reason, include_vpn=False):
+    """Stop the apps (for a clean backup or restore). Returns the ones that were running."""
+    containers = project_containers() or {}
+    order = PAUSE_ORDER + (["gluetun"] if include_vpn else [])
+    stopped = []
+    for service in order:
+        c = containers.get(service)
+        if c and c["state"] in ("running", "restarting"):
+            set_busy(service, reason)
+            docker("POST", f"/containers/{c['id']}/stop?t=30", timeout=90)
+            stopped.append(service)
+    return stopped
+
+
+def resume_apps(services):
+    containers = project_containers() or {}
+    order = ["gluetun", "jellyfin", "prowlarr", "sonarr", "radarr", "bazarr", "qbittorrent"]
+    for service in [s for s in order if s in services]:
+        c = containers.get(service)
+        if c:
+            docker("POST", f"/containers/{c['id']}/start", timeout=60)
+            if service == "gluetun":
+                time.sleep(3)
+        set_busy(service, None)
+
+
+def after_restore():
+    # Logins may have changed with the restored settings.
+    qb_state.update(sid=None, blocked_until=0)
+    updates_cache.update(data=None, at=0)
+
+
 # --------------------------------------------------------------------------- qBittorrent API
 qb_state = {"sid": None, "blocked_until": 0}
 qb_lock = threading.Lock()
@@ -843,7 +882,8 @@ def gather_status():
         "indexers": indexers,
         "series": series,
         "movies": movies,
-        "busy_all": busy.get("_all"),
+        "busy_all": busy.get("_all") or (backups.job["step"] if backups.job["active"] else None),
+        "backup": backups.status(),
         "setup": {"message": setup.get("message"), "done": setup.get("done", {})},
         "login": {"username": s.get("username"), "password": s.get("password")},
         "jellyfin_port": JELLYFIN_PORT,
@@ -933,6 +973,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/updates":
             force = (query.get("refresh") or ["0"])[0] == "1"
             return self.send(200, check_updates(force))
+        if path == "/api/backups/download":
+            try:
+                file_path = backups.safe_name((query.get("name") or [""])[0])
+            except backups.BackupError as err:
+                return self.send(404, {"error": str(err)})
+            size = os.path.getsize(file_path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with open(file_path, "rb") as fh:
+                while True:
+                    chunk = fh.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return None
         if path == "/widgets/stats":
             return self.send(200, widget_stats())
         if path == "/widgets/downloads":
@@ -944,11 +1003,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/backups/upload":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                name = backups.receive_upload(self.rfile, length, urllib.parse.unquote(self.headers.get("X-Filename", "")))
+            except backups.BackupError as err:
+                return self.send(400, {"error": str(err)})
+            except ValueError:
+                return self.send(400, {"error": "Couldn't read that upload."})
+            return self.send(200, {"ok": True, "name": name})
         try:
             body = self.read_body()
         except ValueError:
             return self.send(400, {"error": "Couldn't read that request."})
 
+        if path in ("/api/restart", "/api/restart-all") and backups.job["active"]:
+            return self.send(409, {"error": "Wait for the backup or restore to finish."})
         if path == "/api/restart":
             service = body.get("service")
             if service not in RESTARTABLE:
@@ -962,6 +1032,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"error": "Already restarting."})
             threading.Thread(target=restart_all, daemon=True).start()
             return self.send(202, {"ok": True})
+        if path == "/api/backups/create":
+            try:
+                backups.start_backup("manual")
+            except backups.BackupError as err:
+                return self.send(409, {"error": str(err)})
+            return self.send(202, {"ok": True})
+        if path == "/api/backups/restore":
+            if busy.get("_all"):
+                return self.send(409, {"error": "Wait for the restart to finish."})
+            try:
+                backups.start_restore(body.get("name"))
+            except backups.BackupError as err:
+                return self.send(400, {"error": str(err)})
+            return self.send(202, {"ok": True})
+        if path == "/api/backups/delete":
+            try:
+                backups.delete_backup(body.get("name"))
+            except backups.BackupError as err:
+                return self.send(400, {"error": str(err)})
+            return self.send(200, {"ok": True})
+        if path == "/api/backups/settings":
+            try:
+                return self.send(200, backups.update_settings(body.get("schedule"), body.get("keep")))
+            except (backups.BackupError, ValueError, TypeError) as err:
+                return self.send(400, {"error": str(err)})
         if path == "/api/vpn-check":
             return self.send(200, check_vpn())
         if path == "/api/vpn":
@@ -980,6 +1075,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    backups.hooks.update(stop=pause_apps, start=resume_apps, after_restore=after_restore, version=YAMS_VERSION)
+    backups.ensure_backup_dir()
+    try:
+        backups.resume_after_crash()
+    except Exception:
+        traceback.print_exc()
+    threading.Thread(target=backups.scheduler, daemon=True).start()
     if not os.path.exists(SETUP_PATH):
         write_json(SETUP_PATH, {"done": {}, "message": "Getting everything ready\u2026"})
     threading.Thread(target=configurator, daemon=True).start()

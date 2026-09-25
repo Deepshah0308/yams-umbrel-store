@@ -42,9 +42,9 @@ services:
     volumes:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
 
-  # Setup dashboard, auto-configurator, log viewer and app controls
+  # Setup dashboard, auto-configurator, log viewer, app controls and backups
   # (plain Python, no custom image needed). It uses the Docker socket only to
-  # read logs from, inspect and restart this app's own containers.
+  # read logs from, inspect, stop, start and restart this app's own containers.
   dashboard:
     image: python:3.12.14-alpine
     command: ["python", "-u", "/app/dashboard/server.py"]
@@ -52,11 +52,13 @@ services:
     environment:
       APP_PREFIX: yams-media
       JELLYFIN_PORT: "8097"
-      YAMS_VERSION: "1.1.0"
+      YAMS_VERSION: "1.2.0"
+      DATA_DIR: /yams
+      BACKUP_DIR: /backups
     volumes:
       - ${APP_DATA_DIR}/hooks/yams:/app:ro
-      - ${APP_DATA_DIR}/data/state:/state
-      - ${APP_DATA_DIR}/data/vpn/wireguard:/vpn
+      - ${APP_DATA_DIR}/data:/yams
+      - ${UMBREL_ROOT}/data/storage/downloads/yams-backups:/backups
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       init:
@@ -136,7 +138,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # Downloading — qBittorrent lives *inside* the VPN container's network.
-  # It only starts once the VPN is healthy and shuts itself down if the VPN drops.
+  # It only starts once the VPN tunnel is up and shuts itself down if it drops.
   # ---------------------------------------------------------------------------
   gluetun:
     image: qmcgaw/gluetun:v3.41.3
