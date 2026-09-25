@@ -1,0 +1,21 @@
+name: Idea or improvement
+description: Suggest something that would make YAMS on Umbrel easier or better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to be easier?
+      description: Describe the situation, not only the solution. "I keep having to…" is a great start.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you suggest?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Want to build it?
+      options:
+        - label: I'd like to work on this myself (see CONTRIBUTING.md)

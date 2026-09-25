@@ -33,8 +33,9 @@ INCLUDE = ["config", "state", "vpn/wireguard"]
 SKIP_DIRS = {"cache", "transcodes", "transcoding-temp", "logs", "MediaCover", "Backups", "__pycache__"}
 SKIP_FILE = re.compile(r"(\.pid|\.tmp|\.lock|\.part)$")
 NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(tar\.gz|tgz)$")
-LABEL_IN_NAME = re.compile(r"-(manual|auto|pre-restore|uploaded)\.tar\.gz$")
-LABELS = {"manual": "Manual", "auto": "Automatic", "pre-restore": "Before restore", "uploaded": "Uploaded"}
+LABEL_IN_NAME = re.compile(r"-(manual|auto|pre-restore|pre-update|uploaded)\.tar\.gz$")
+LABELS = {"manual": "Manual", "auto": "Automatic", "pre-restore": "Before restore",
+          "pre-update": "Before update", "uploaded": "Uploaded"}
 
 # Set by server.py: stop(reason, include_vpn) -> list of stopped services,
 # start(services), after_restore(), version string.

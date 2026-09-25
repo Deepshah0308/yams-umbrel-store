@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YAMS for Umbrel — your own media server in one install</title>
+<meta name="description" content="Jellyfin, Sonarr, Radarr, Prowlarr, Bazarr and VPN-protected qBittorrent for umbrelOS, set up for you. Add the store, install, follow four steps.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --night: #1b1726; --stage: #241f33; --seam: #3a3350; --paper: #f3efe6; --dust: #b3abc4;
+    --bulb: #ffc24b; --go: #7ed6a0;
+    --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--night); }
+  body { margin: 0; color: var(--paper); font: 400 1.0625rem/1.65 var(--body); -webkit-font-smoothing: antialiased; }
+  main { max-width: 44rem; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
+  a { color: var(--bulb); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--bulb); outline-offset: 3px; border-radius: 6px; }
+  h1, h2, h3 { font-family: var(--display); margin: 0; }
+  p { margin: 0 0 1rem; }
+  .muted { color: var(--dust); }
+  code { font-family: var(--mono); font-size: .9em; background: var(--stage); padding: .1em .35em; border-radius: 5px; }
+
+  /* hero */
+  .mark { display: flex; align-items: center; gap: .8rem; margin-bottom: 2rem; font: 500 1rem var(--display); color: var(--dust); }
+  .mark svg { width: 44px; height: 44px; border-radius: 11px; flex: none; }
+  .mark b { color: var(--paper); font-weight: 700; }
+  h1 { font-size: clamp(2.2rem, 6vw, 3.2rem); line-height: 1.06; letter-spacing: -.02em; font-weight: 700; max-width: 16ch; }
+  .lede { font-size: 1.2rem; color: var(--dust); margin: 1.2rem 0 2rem; max-width: 34rem; }
+
+  .store { background: var(--stage); border-radius: 12px; padding: 1rem 1.1rem; }
+  .store-label { font-size: .9rem; color: var(--dust); margin-bottom: .45rem; }
+  .store-row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .store-url { font: 400 .98rem var(--mono); overflow-wrap: anywhere; flex: 1; min-width: 14rem; }
+  .btn { appearance: none; border: 0; border-radius: 999px; padding: .6rem 1.15rem; font: 700 .98rem var(--body);
+         background: var(--bulb); color: var(--night); cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn.quiet { background: transparent; color: var(--paper); box-shadow: inset 0 0 0 2px var(--seam); }
+
+  section { margin-top: 4.5rem; }
+  h2 { font-size: 1.5rem; margin-bottom: 1.2rem; }
+
+  /* marquee rail, as in the YAMS dashboard */
+  ol.rail { list-style: none; margin: 0; padding: 0; }
+  ol.rail li { position: relative; padding: 0 0 1.6rem 3.4rem; }
+  ol.rail li:not(:last-child)::before { content: ""; position: absolute; left: 1.02rem; top: 2.3rem; bottom: .2rem; width: 2px; background: rgba(255, 194, 75, .35); }
+  ol.rail .bulb { position: absolute; left: 0; top: 0; width: 2.15rem; height: 2.15rem; border-radius: 50%; display: grid; place-items: center;
+                  font: 700 .95rem/1 var(--display); background: var(--bulb); color: var(--night);
+                  box-shadow: 0 0 0 5px rgba(255, 194, 75, .12), 0 0 20px rgba(255, 194, 75, .35); }
+  ol.rail h3 { font-size: 1.15rem; margin: .2rem 0 .3rem; }
+  ol.rail p { color: var(--dust); margin: 0; }
+
+  ul.apps { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--seam); }
+  ul.apps li { display: flex; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--seam); }
+  ul.apps b { font-family: var(--display); min-width: 7.5rem; }
+  ul.apps span { color: var(--dust); }
+
+  details { border-bottom: 1px solid var(--seam); }
+  details:first-of-type { border-top: 1px solid var(--seam); }
+  summary { cursor: pointer; padding: .9rem 0; font-weight: 700; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; float: right; color: var(--bulb); font-family: var(--display); }
+  details[open] summary::after { content: "–"; }
+  details p { color: var(--dust); }
+
+  footer { margin-top: 5rem; padding-top: 1.5rem; border-top: 1px solid var(--seam); color: var(--dust); font-size: .92rem; }
+  footer p { margin: 0 0 .5rem; }
+  @media (max-width: 520px) { main { padding-top: 2.5rem; } ul.apps li { flex-direction: column; gap: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">
+    <svg viewBox="0 0 256 256" aria-hidden="true"><defs><radialGradient id="bg" cx="50%" cy="42%" r="70%"><stop offset="0" stop-color="#2e2644"/><stop offset="1" stop-color="#17131f"/></radialGradient></defs><rect width="256" height="256" fill="url(#bg)"/><g fill="#ffc24b"><circle cx="128" cy="40" r="9"/><circle cx="204.2" cy="84" r="9"/><circle cx="204.2" cy="172" r="9"/><circle cx="128" cy="216" r="9"/><circle cx="51.8" cy="172" r="9"/><circle cx="51.8" cy="84" r="9"/></g><g fill="#8a6f3c"><circle cx="172" cy="51.8" r="7.5"/><circle cx="216" cy="128" r="7.5"/><circle cx="172" cy="204.2" r="7.5"/><circle cx="84" cy="204.2" r="7.5"/><circle cx="40" cy="128" r="7.5"/><circle cx="84" cy="51.8" r="7.5"/></g><path d="M110 84 L172 120 Q185 128 172 136 L110 172 Q97 179.5 97 164.5 L97 91.5 Q97 76.5 110 84 Z" fill="#f3efe6"/></svg>
+    <span><b>YAMS</b> for Umbrel</span>
+  </div>
+
+  <h1>Your own media server, in one install.</h1>
+  <p class="lede">Jellyfin, Sonarr, Radarr, Prowlarr, Bazarr and qBittorrent, already connected to each other, with downloads locked behind a VPN. Built on <a href="https://yams.media">YAMS</a>, packaged for <a href="https://umbrel.com">umbrelOS</a>.</p>
+
+  <div class="store">
+    <div class="store-label">Community app store address</div>
+    <div class="store-row">
+      <span class="store-url" id="store-url">https://github.com/Deepshah0308/yams-umbrel-store</span>
+      <button class="btn" id="copy" type="button">Copy</button>
+    </div>
+  </div>
+
+  <section id="install">
+    <h2>Install</h2>
+    <ol class="rail">
+      <li><span class="bulb">1</span><h3>Add the store</h3>
+        <p>In Umbrel, open the <b>App Store</b>, click <b>⋯</b> in the top right, choose <b>Community App Stores</b>, paste the address above and click <b>Add</b>.</p></li>
+      <li><span class="bulb">2</span><h3>Install YAMS</h3>
+        <p>Open <b>YAMS App Store</b>, click <b>YAMS</b>, then <b>Install</b>. The first install downloads about 2–3 GB, so give it a few minutes.</p></li>
+      <li><span class="bulb">3</span><h3>Open YAMS and follow its four steps</h3>
+        <p>Paste your VPN's WireGuard file, pick your indexers in Prowlarr, add a show or movie, then start watching in Jellyfin at <code>http://umbrel.local:8097</code>.</p></li>
+    </ol>
+  </section>
+
+  <section id="inside">
+    <h2>What you get</h2>
+    <ul class="apps">
+      <li><b>Jellyfin</b><span>Watch on your TV, phone, console or browser.</span></li>
+      <li><b>Sonarr</b><span>Follows your shows and grabs new episodes.</span></li>
+      <li><b>Radarr</b><span>Finds and organises movies.</span></li>
+      <li><b>Prowlarr</b><span>One place to choose where YAMS searches, with FlareSolverr for Cloudflare.</span></li>
+      <li><b>Bazarr</b><span>Subtitles, automatically.</span></li>
+      <li><b>qBittorrent</b><span>Downloads only through your VPN, and stops if the VPN drops.</span></li>
+    </ul>
+    <p class="muted" style="margin-top:1.2rem">The YAMS dashboard runs the whole stack: status and logs for every app, a VPN leak check, one-click fixes, backups, and updates to the newest version of every app whenever you like. Two widgets put VPN status and downloads on your Umbrel home screen.</p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions</h2>
+    <details><summary>Which VPNs work?</summary>
+      <p>Any VPN that lets you download a WireGuard configuration file, such as Proton VPN, Mullvad or AirVPN. YAMS fixes the parts of the file that trip people up, and downloads stay off until the VPN is connected.</p></details>
+    <details><summary>Where are my movies and shows?</summary>
+      <p>In Umbrel's Files app under <b>Downloads → media</b>. Downloads in progress are in <b>Downloads → torrents</b>.</p></details>
+    <details><summary>How do I update?</summary>
+      <p>Open YAMS, go to <b>Updates</b> and click <b>Update all apps</b>, or switch on weekly automatic updates. YAMS backs up your settings first. New YAMS features arrive through Umbrel's own <b>Update</b> button.</p></details>
+    <details><summary>Something isn't working.</summary>
+      <p>Try <b>Quick fixes → Fix everything</b> in the YAMS dashboard. Every app also has a <b>Logs</b> button. If you're still stuck, <a href="https://github.com/Deepshah0308/yams-umbrel-store/issues/new/choose">open an issue</a> and paste the logs.</p></details>
+    <details><summary>Can I move my setup to another Umbrel?</summary>
+      <p>Yes. Make a backup in the YAMS dashboard, install YAMS on the new Umbrel, upload the backup and click <b>Restore</b>.</p></details>
+  </section>
+
+  <section id="contribute">
+    <h2>Help make it better</h2>
+    <p>Bug reports, ideas and pull requests are welcome. The <a href="https://github.com/Deepshah0308/yams-umbrel-store/blob/main/CONTRIBUTING.md">contributing guide</a> explains how to test changes on your own Umbrel in a few minutes.</p>
+    <a class="btn quiet" href="https://github.com/Deepshah0308/yams-umbrel-store">View on GitHub</a>
+  </section>
+
+  <footer>
+    <p>Built on <a href="https://yams.media">YAMS</a> by rogs, with <a href="https://github.com/qdm12/gluetun">gluetun</a>, <a href="https://www.linuxserver.io">linuxserver.io</a> images and the <a href="https://trash-guides.info">TRaSH Guides</a>. Not affiliated with Umbrel.</p>
+    <p>YAMS is a tool for organising media you have the right to access. Check the laws where you live.</p>
+  </footer>
+</main>
+<script>
+  document.getElementById("copy").addEventListener("click", async (e) => {
+    const text = document.getElementById("store-url").textContent;
+    try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; }
+    catch (_) {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("store-url"));
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+      e.target.textContent = "Selected";
+    }
+    setTimeout(() => (e.target.textContent = "Copy"), 1600);
+  });
+</script>
+</body>
+</html>

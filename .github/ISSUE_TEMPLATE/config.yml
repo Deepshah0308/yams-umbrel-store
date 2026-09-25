@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Install guide
+    url: https://deepshah0308.github.io/yams-umbrel-store/
+    about: Step-by-step install instructions and common questions.
+  - name: YAMS forum
+    url: https://forum.yams.media
+    about: General questions about Sonarr, Radarr, Prowlarr and Jellyfin themselves.

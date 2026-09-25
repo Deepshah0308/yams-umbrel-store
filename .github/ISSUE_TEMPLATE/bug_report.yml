@@ -1,0 +1,50 @@
+name: Something isn't working
+description: Report a problem with YAMS on Umbrel
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Before you start, try **Quick fixes → Fix everything** in the YAMS dashboard. It solves most connection problems.
+  - type: input
+    id: version
+    attributes:
+      label: YAMS version
+      description: Shown at the top of the YAMS dashboard, next to "YAMS on Umbrel".
+      placeholder: v1.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which part is affected?
+      options:
+        - Installing YAMS
+        - VPN (gluetun)
+        - qBittorrent
+        - Sonarr
+        - Radarr
+        - Prowlarr
+        - Jellyfin
+        - Bazarr
+        - YAMS dashboard (setup, fixes, updates, backups)
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: In the YAMS dashboard, click **Logs** on the affected app, then **Copy**, and paste here. Remove anything private first. Never paste your VPN file or passwords.
+      render: text
+  - type: input
+    id: hardware
+    attributes:
+      label: Umbrel hardware and umbrelOS version
+      placeholder: Umbrel Home, umbrelOS 1.5
