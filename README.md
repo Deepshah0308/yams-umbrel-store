@@ -1,5 +1,9 @@
 # YAMS App Store for Umbrel
 
+[![Checks](https://github.com/Deepshah0308/yams-umbrel-store/actions/workflows/checks.yml/badge.svg)](https://github.com/Deepshah0308/yams-umbrel-store/actions/workflows/checks.yml)
+
+**Install guide: https://deepshah0308.github.io/yams-umbrel-store/**
+
 A community app store for [umbrelOS](https://umbrel.com) with one app: **YAMS** ([Yet Another Media Server](https://yams.media)), packaged so a complete beginner can go from "install" to "watching" without touching a terminal or a config file.
 
 One install gives you Jellyfin, Sonarr, Radarr, Prowlarr (+ FlareSolverr), Bazarr and qBittorrent locked behind a VPN, all already connected to each other, plus a setup dashboard that walks you through the four things only you can decide.
@@ -52,7 +56,7 @@ Once setup is done, the YAMS dashboard becomes the control panel for the whole s
 | `yams logs` | **Logs** on every app, live-updating, with errors highlighted and a Copy button |
 | `yams restart` | **Restart** on every app, or **Restart all** (the VPN is restarted before qBittorrent so it reconnects cleanly) |
 | `yams backup` | **Backups**: back up on demand or automatically (daily or weekly, keeping the last 3, 5 or 10), and **Restore** any backup with one click |
-| `yams update` | **Check for updates** shows installed versus newest versions; the update itself arrives through Umbrel's **Update** button (see below) |
+| `yams update` | **Update apps** checks Docker Hub and updates every app to its newest version with one click, or automatically each week. It backs up your settings first |
 
 Two widgets are available for the Umbrel home screen: a stats card (VPN, downloads, shows, movies) and a live list of active downloads. Right-click the home screen and choose **Edit widgets** to add them.
 
@@ -62,9 +66,13 @@ Restoring checks the file first: it must be a YAMS for Umbrel backup that contai
 
 Backups contain your passwords and VPN key, so keep copies somewhere private.
 
-**Why updates go through Umbrel.** umbrelOS recreates every container from the app's pinned `docker-compose.yml` whenever the app starts, restarts or updates. An in-app "pull latest" would be quietly undone at the next reboot, so versions are bumped in this repository instead. Each bump appears in Umbrel as an **Update** button for YAMS that updates every app at once.
+**Quick fixes** repair the most common problems with one click: connect Prowlarr to Sonarr and Radarr, connect qBittorrent to them, fix library folders, rescan Jellyfin, search for missing episodes and movies, and reconnect the VPN. **Fix everything** runs the first three. Each fix checks first and only changes what's wrong. YAMS also re-checks the Prowlarr and qBittorrent connections every 10 minutes by itself.
 
-**Docker access.** The dashboard mounts the Docker socket so it can read logs and restart containers, the same approach Umbrel's Portainer and Dozzle apps use. It only ever acts on containers that belong to the YAMS app (by their Docker Compose project label), and can't restart itself.
+**Two kinds of updates.** *App updates* (new Sonarr, Jellyfin and so on) happen from the YAMS dashboard whenever you like. The apps use moving tags such as `latest`, so YAMS can check Docker Hub, download new images and swap each container for a new one with identical settings. It backs up your settings first and rolls back any app that won't start. *YAMS updates* (new dashboard features and fixes) arrive through Umbrel's own **Update** button when a new version is published here.
+
+**Security.** The media apps sit on a private network other Umbrel apps can't reach, and every web page is behind your Umbrel login. The dashboard's controls are only reachable through the router, never the network. Your password is hidden until you press **Show**, and **Change password** updates every app at once. See [SECURITY.md](SECURITY.md) for details and how to report a problem privately.
+
+**Docker access.** The dashboard mounts the Docker socket so it can read logs, restart containers and update apps, the same approach Umbrel's Portainer and Dozzle apps use. It only ever acts on containers that belong to the YAMS app (by their Docker Compose project label), and can't restart itself.
 
 ## How it fits together
 
@@ -95,15 +103,20 @@ yams-media/
     setup/seed.py             first boot: keys, passwords, starter configs, folders
     dashboard/server.py       dashboard API, app wiring, Docker controls, widgets
     dashboard/backups.py      backup, restore and the backup schedule
+    dashboard/updater.py      app updates: registry checks, pulls, safe container swaps
     dashboard/index.html      the setup dashboard
     vpn/vpn-wrapper.sh        starts gluetun once a VPN file exists; reconnects on change
     qbittorrent/entry.sh      holds qBittorrent until the VPN tunnel is up
     qbittorrent/vpn-guard.sh  stops qBittorrent if the VPN drops
     Caddyfile                 routes every UI behind the Umbrel login
   data/                       persistent config (empty until first run)
+docs/                         the install guide (GitHub Pages)
+tests/                        automated tests, run on every pull request
 ```
 
 ## Troubleshooting
+
+Start with **Quick fixes → Fix everything** in the YAMS dashboard. It solves most connection problems.
 
 - **qBittorrent says "Waiting for the VPN".** Open **Logs** on the **VPN** row. The last lines say why the tunnel isn't up (an expired key, an unreachable server). Downloading a fresh WireGuard file for another server fixes most cases.
 - **An app says "Keeps restarting".** Its row shows the last log line; open **Logs** for the full story.
@@ -120,6 +133,10 @@ yams-media/
 - VPN port forwarding isn't configured, so torrents work but may connect to fewer peers.
 - No hardware transcoding by default. On Intel machines you can add `devices: ["/dev/dri:/dev/dri"]` to the Jellyfin service.
 - Only the Downloads folder is used; external drives need Umbrel 2.0's folder access feature or a manual mount.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the tests and try changes on your own Umbrel. The changes in each version are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
